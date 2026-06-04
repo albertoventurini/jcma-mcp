@@ -6,6 +6,8 @@ dependency-reduced-pom.xml
 
 # M0 spike: upstream corpus clones (re-created via README reproduce steps) and extracted classpaths
 milestones/m0-spike/corpus/
+# M0 spike: generated Spike A artifacts (coverage/histogram/worksheets)
+milestones/m0-spike/out/
 
 # Editor / OS
 .idea/
