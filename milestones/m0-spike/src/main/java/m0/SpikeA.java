@@ -60,8 +60,10 @@ public final class SpikeA {
         Path outDir = Path.of(args[4]);
         Files.createDirectories(outDir);
 
-        SolverSetup.Wiring w = SolverSetup.build(src, cp);
-        System.out.printf("[%s] %s  src=%s  jars=%d%n", mode, label, src, w.jars());
+        // Task-02b calibration: M0_NO_JDK=1 drops ReflectionTypeSolver (JDK unresolvable, as native).
+        boolean withJdk = !"1".equals(System.getenv("M0_NO_JDK"));
+        SolverSetup.Wiring w = SolverSetup.build(src, cp, withJdk);
+        System.out.printf("[%s] %s  src=%s  jars=%d  jdk=%b%n", mode, label, src, w.jars(), withJdk);
 
         switch (mode) {
             case "coverage" -> coverage(w, src, label, outDir);

@@ -26,8 +26,19 @@ public final class SolverSetup {
     private SolverSetup() {}
 
     public static Wiring build(Path sourceRoot, Path cpFile) throws IOException {
+        return build(sourceRoot, cpFile, true);
+    }
+
+    /**
+     * Task-02b calibration knob: {@code withJdkReflection=false} drops {@code ReflectionTypeSolver},
+     * making the JDK unresolvable — mirroring the native-image gap. Running {@code coverage} with and
+     * without it sizes how much *project*-symbol resolution depends on a working JDK type-solver.
+     */
+    public static Wiring build(Path sourceRoot, Path cpFile, boolean withJdkReflection) throws IOException {
         CombinedTypeSolver solver = new CombinedTypeSolver();
-        solver.add(new ReflectionTypeSolver(false));
+        if (withJdkReflection) {
+            solver.add(new ReflectionTypeSolver(false));
+        }
         solver.add(new JavaParserTypeSolver(sourceRoot));
         int jars = 0;
         if (Files.exists(cpFile)) {

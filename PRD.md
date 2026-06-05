@@ -212,6 +212,12 @@ agent's Edit tool, `bash sed`, `git checkout/pull`, another editor.
 
 - **Per-file fingerprint** in the file table: `(path, size, mtime, contentHash)`. Hash is a
   **fast non-cryptographic** one (e.g. xxHash64) — we need "did the bytes change," not security.
+- **Host-JDK signature cache (M1 Task-02b)** uses the same fingerprint model at JDK granularity:
+  a fast hash of `$JAVA_HOME/release` + `lib/modules` size keys a `~/.cache/jcma/jdk-<fp>.jar`
+  (the de-moduled JDK signatures). Built **once per JDK version** by a short-lived helper JVM that
+  reads the host JDK's own `jrt:/` image, then reused across runs/projects (cache hit = no
+  subprocess). This is the native-image substitute for `ReflectionTypeSolver`; the JVM/dev path
+  still reflects directly. *(Currently SHA-free FNV-1a; xxHash64 is the eventual project-wide hash.)*
 - **Cold start = one full parse-only scan** (only when the persisted index is missing/
   incompatible): read+hash+parse every file, build Tier-1 + trigram. Inherent (can't index
   without reading every file once), parallel, persisted. **Warm reopen ≠ full scan.**

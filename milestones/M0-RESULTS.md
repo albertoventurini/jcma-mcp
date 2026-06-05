@@ -152,17 +152,22 @@ FFM mmap, and the MCP stdio loop **all run in the binary**.
    >   **`--enable-url-protocols=jar`**. javassist's byte-parsing (no runtime classloading) is the
    >   native-correct strategy; arbitrary jars resolve with no metadata.
    >
-   > - **JDK — STILL OPEN.** `ReflectionTypeSolver` resolves JDK types by *runtime reflection*,
-   >   which native-image serves only for classes registered at jcma **build** time. jcma analyzes
-   >   *arbitrary* projects/JDKs, so that surface **cannot be pre-seeded** — demonstrated: in the
-   >   native binary `java.util.Arrays.equals` and `java.io.PrintStream.println` are **unresolved**
-   >   (both fine on the JVM / dev fat-JAR). And it is not merely "navigating into the JDK" (low
-   >   value — the agent knows the JDK): JDK types are load-bearing *intermediates* for **project**
-   >   queries (overload selection in find-refs, `get_type_at` answers that are themselves JDK
-   >   generics, type/call hierarchies through JDK supertypes), so the gap degrades project-symbol
-   >   accuracy. **Fix (Task-02b):** resolve the JDK the way jars are — byte-parse **signatures +
-   >   hierarchy only** (no source/decl-sites) from the **host** JDK's `jmods`, fingerprint-cached per
-   >   JDK version; never bake JDKs into the binary. Interim: dev/JVM mode resolves the JDK for free.
+   > - **JDK — ANSWERED (Task-02b, 2026-06-05).** `ReflectionTypeSolver` resolves JDK types by
+   >   *runtime reflection*, which native-image serves only for classes registered at jcma **build**
+   >   time. jcma analyzes *arbitrary* projects/JDKs, so that surface **cannot be pre-seeded** —
+   >   demonstrated: in the native binary `java.util.Arrays.equals` and `java.io.PrintStream.println`
+   >   were **unresolved** (both fine on the JVM / dev fat-JAR). And it is not merely "navigating into
+   >   the JDK" (low value — the agent knows the JDK): JDK types are load-bearing *intermediates* for
+   >   **project** queries — calibration (Task-02b Step 0) measured the cost: dropping the JDK solver
+   >   cratered overall resolution **99.48%→57.63%** (commons-lang) and **99.61%→63.70%**
+   >   (jackson-databind). **Fix:** resolve the JDK the way jars are — feed `JarTypeSolver` a
+   >   de-moduled JDK jar derived from the **host** JDK, fingerprint-cached per JDK version, nothing
+   >   baked in. The jar is produced by a short-lived **helper JVM** (`$JAVA_HOME/bin/java`) that reads
+   >   the host JDK's own **`jrt:/` image** — works on every JDK 9+ (jmods or jimage-only) and pulls
+   >   **zero** JDK-internal API into the native image. Native-only; dev/JVM keeps reflection. The
+   >   native binary now resolves the formerly-unresolved JDK targets (`jdkResolveSmoke`). Full
+   >   write-up + locked decisions in `M1-RESULTS.md`; design pivot (helper-JVM/`jrt:/` over the
+   >   original in-process `jmods` plan) in `milestones/M1/tasks/task-02b-jdk-type-solver.md`.
 
 ## Recommendation — **GO**
 **All four spikes GREEN; proceed on the JavaParser + JavaSymbolSolver + GraalVM-native-image +

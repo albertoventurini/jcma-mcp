@@ -20,12 +20,52 @@ repositories {
     mavenCentral()
 }
 
+// ---------------------------------------------------------------------------------------------
+// Task-02b — embedded JDK-indexer helper (jcma/jdkindex/JdkIndexer).
+//
+// The native binary cannot reflect an arbitrary host JDK, so on a cache miss it spawns the host
+// `java` to byte-index that JDK's own `jrt:/` image into a de-moduled jar (then resolves it via
+// JarTypeSolver, the proven native-safe path). That helper ships *embedded* as a resource jar:
+//  • compiled standalone at release 17 (conservative — it runs on a range of host JDKs),
+//  • excluded from the main compileJava so it has a single source of truth (the jar),
+//  • referenced by the native code only by resource path + main-class string, never by type.
+val jdkIndexerClasses by tasks.registering(JavaCompile::class) {
+    description = "Compile the embedded JDK-indexer helper (runs on the host JVM, not the native image)."
+    source("src/main/java/jcma/jdkindex")
+    include("**/*.java")
+    classpath = files()
+    options.release = 17
+    javaCompiler = javaToolchains.compilerFor {
+        languageVersion = JavaLanguageVersion.of(25)
+        vendor = JvmVendorSpec.GRAAL_VM
+    }
+    destinationDirectory = layout.buildDirectory.dir("jdk-indexer/classes")
+}
+
+val jdkIndexerJar by tasks.registering(Jar::class) {
+    description = "Package the JDK-indexer helper into jcma-jdk-indexer.jar (embedded as a resource)."
+    from(jdkIndexerClasses) {
+        exclude("previous-compilation-data.bin") // Gradle incremental metadata, not a class
+    }
+    destinationDirectory = layout.buildDirectory.dir("jdk-indexer")
+    archiveFileName = "jcma-jdk-indexer.jar"
+    manifest {
+        // Run on the host via `java -jar`, so it needs an executable main-class.
+        attributes["Main-Class"] = "jcma.jdkindex.JdkIndexer"
+    }
+}
+
 dependencies {
     implementation("com.github.javaparser:javaparser-symbol-solver-core:3.28.2")
 
     testImplementation(platform("org.junit:junit-bom:5.11.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
+    // The JDK-indexer helper (jcma/jdkindex) is excluded from the main compileJava — its one source
+    // of truth is the embedded jar, run via `java -jar` on the host. JdkIndexTest exercises it
+    // directly, so put its compiled classes on the test classpath. (Carries the task dependency.)
+    testImplementation(files(jdkIndexerClasses))
 }
 
 java {
@@ -39,6 +79,21 @@ java {
 
 application {
     mainClass = "jcma.cli.Main"
+}
+
+// The indexer is built standalone (above) and embedded as a resource; the main compile must not
+// also compile it (single source of truth — the native code references it by resource + main-class
+// string only, never by type).
+tasks.compileJava {
+    exclude("jcma/jdkindex/**")
+}
+
+// Embed the indexer jar at the classpath path HostJdkIndex reads it from.
+tasks.processResources {
+    dependsOn(jdkIndexerJar)
+    from(jdkIndexerJar) {
+        into("jcma/jdkindex")
+    }
 }
 
 tasks.test {
@@ -169,5 +224,42 @@ tasks.register("crossJarSmoke") {
                 "cross-jar smoke FAILED (exit=$code) — expected `$expected` via JarTypeSolver:\n$output")
         }
         println("cross-jar smoke OK — JarTypeSolver resolves through the native image")
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Task-02b native JDK-target resolve smoke.
+//
+// The contract that *fails today*: the native binary resolves a JDK-method call (here jcma's own
+// `out.println(...)` in Main.java) to its JDK FQN + signature — proving the host-derived JDK index
+// (helper-JVM → `jrt:/` → JarTypeSolver) works under native-image. Run with the *ambient* JAVA_HOME
+// (the default jimage-only JDK on this machine — no jmods), so it exercises the real first-run path;
+// the helper reads that JDK's own image, which is why jmods-absence is irrelevant.
+
+tasks.register("jdkResolveSmoke") {
+    group = "verification"
+    description = "Native JDK-target resolve smoke — does the host-derived JDK index resolve a JDK symbol?"
+    dependsOn(tasks.named("nativeCompile"))
+    doLast {
+        val binary = layout.buildDirectory.file("native/nativeCompile/jcma").get().asFile
+        require(binary.exists()) { "native binary missing (run nativeCompile): $binary" }
+        // A jcma source file with a JDK-typed call — Main.java:43 `out.println("jcma " + VERSION);`,
+        // `println` token at column 21 (the dogfood action that originally surfaced the gap).
+        val src = file("src/main/java/jcma/cli/Main.java")
+        require(src.exists()) { "jcma source file missing: $src" }
+
+        val proc = ProcessBuilder(binary.absolutePath, "resolve", src.absolutePath, "43:21")
+            .directory(projectDir)
+            .redirectErrorStream(true)
+            .start()
+        val output = proc.inputStream.bufferedReader().readText()
+        val code = proc.waitFor()
+        println(output)
+        val expected = "java.io.PrintStream.println(java.lang.String)"
+        if (code != 0 || !output.contains(expected)) {
+            throw GradleException(
+                "jdk-resolve smoke FAILED (exit=$code) — expected `$expected` via the host JDK index:\n$output")
+        }
+        println("jdk-resolve smoke OK — host-derived JDK index resolves a JDK target under native-image")
     }
 }

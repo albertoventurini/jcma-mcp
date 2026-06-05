@@ -1,4 +1,10 @@
 {
+  "resources": [
+    {
+      "comment": "Task-02b: embedded JDK-indexer jar, extracted + run by HostJdkIndex on a cache miss.",
+      "glob": "jcma/jdkindex/jcma-jdk-indexer.jar"
+    }
+  ],
   "reflection": [
     {
       "type": "com.github.javaparser.ast.body.FieldDeclaration",

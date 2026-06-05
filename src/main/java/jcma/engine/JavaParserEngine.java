@@ -42,9 +42,25 @@ public final class JavaParserEngine implements AnalysisEngine {
     private final JavaParser parser;
 
     public JavaParserEngine(Workspace workspace) {
-        // CombinedTypeSolver = JDK (reflection) + each project source root + every dependency jar.
+        // CombinedTypeSolver = JDK + each project source root + every dependency jar.
         CombinedTypeSolver solver = new CombinedTypeSolver();
-        solver.add(new ReflectionTypeSolver(false));
+        // JDK (kept first, mirroring the M0 spike order). Native-image serves reflection only for
+        // build-time-registered classes, so under native-image we resolve the JDK from a host-derived
+        // byte-parsed jar (Task-02b); on the JVM/dev path reflection is a known-good fallback (host
+        // classes are loaded). Selector avoids any GraalVM class dependency.
+        if ("runtime".equals(System.getProperty("org.graalvm.nativeimage.imagecode"))) {
+            HostJdkIndex.resolveCacheJar().ifPresent(jar -> {
+                try {
+                    solver.add(new JarTypeSolver(jar));
+                } catch (IOException e) {
+                    if (DEBUG) {
+                        System.err.println("  skip JDK index: " + e);
+                    }
+                }
+            });
+        } else {
+            solver.add(new ReflectionTypeSolver(false));
+        }
         for (Path sourceRoot : workspace.sourceRoots()) {
             if (Files.isDirectory(sourceRoot)) {
                 solver.add(new JavaParserTypeSolver(sourceRoot));

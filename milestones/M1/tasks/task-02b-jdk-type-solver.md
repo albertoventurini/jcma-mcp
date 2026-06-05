@@ -1,6 +1,25 @@
 # M1 · Task 02b — native JDK type resolution (host-derived signature index)
 > Make the **native** binary resolve JDK symbols, by byte-parsing the host JDK instead of reflecting it.
 
+> **STATUS: DONE (2026-06-05).** Implemented via a **helper-JVM indexer**, not the in-process `jmods`
+> reader the Design section below originally proposed — see **Design pivot** immediately under it.
+> Calibration + measured numbers + locked decisions: [`M1-RESULTS.md`](../../M1-RESULTS.md).
+>
+> **Design pivot (what shipped).** Two findings overrode the `jmods` plan: (1) the default host JDK
+> here is **jimage-only — no `jmods/`** (true of JREs / jlink images generally), so a jmods reader
+> can't even dogfood; (2) a short-lived **helper JVM** = `$JAVA_HOME/bin/java` running *on* the target
+> JDK reads that JDK's own classes through the built-in **`jrt:/` filesystem** — works on **every
+> JDK 9+** regardless of `jmods`, with **zero JDK-internal API** in the native image. So on a cache
+> miss the native binary spawns that helper ([`JdkIndexer`](../../../src/main/java/jcma/jdkindex/JdkIndexer.java)),
+> which writes a **de-moduled JDK jar**; the native side
+> ([`HostJdkIndex`](../../../src/main/java/jcma/engine/HostJdkIndex.java)) feeds it to a plain
+> **`JarTypeSolver`** (reusing the proven `--enable-url-protocols=jar` path — **no custom
+> `TypeSolver`**). It is **native-only**: the JVM/dev path keeps `ReflectionTypeSolver` (a known-good
+> fallback; host classes are loaded), selected by
+> `"runtime".equals(System.getProperty("org.graalvm.nativeimage.imagecode"))`. The jar is
+> fingerprint-cached at `~/.cache/jcma/jdk-<fp>.jar` (cache hit = no subprocess). The in-process
+> `jmods` byte-parse below is **superseded** but kept for the rationale trail.
+
 ## Why (surfaced by Task-02)
 Running `jcma resolve` on this repo exposed it: the native binary resolves project source and
 third-party jars, but **JDK-target symbols are unresolved** (`java.util.Arrays.equals`,

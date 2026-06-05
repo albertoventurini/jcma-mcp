@@ -127,4 +127,48 @@ class JavaParserEngineTest {
         assertEquals("crossjar.lib.Greeting.hello(java.lang.String)", ref.get().signature());
         assertNull(ref.get().declFile(), "callee lives only in the jar → external decl");
     }
+
+    // ---------------------------------------------------------------- JDK targets (Task-02b)
+
+    private static final Path JDK_RESOLVE =
+            Path.of("src/test/resources/fixtures/engine/jdk-resolve");
+
+    private static JavaParserEngine jdkResolveEngine() {
+        Workspace ws = new Workspace(JDK_RESOLVE, List.of(JDK_RESOLVE), List.of());
+        return new JavaParserEngine(ws);
+    }
+
+    /**
+     * JDK-target method calls resolve to their JDK FQN + signature, with an external declaration site
+     * (no project {@code file:line}). On the JVM this exercises {@code ReflectionTypeSolver}; on the
+     * native binary the same contract is carried by the host-derived index ({@code jdkResolveSmoke}).
+     */
+    @Test
+    void resolvesJdkMethodCalls() throws Exception {
+        JavaParserEngine engine = jdkResolveEngine();
+        ParsedUnit unit = engine.parse(JDK_RESOLVE.resolve("JdkCalls.java"));
+
+        // JdkCalls.java:13 `boolean eq = Arrays.equals(a, b);` — `equals` token at column 29.
+        Optional<ResolvedRef> arrays = engine.resolveMethodCall(unit, new Position(13, 29));
+        assertTrue(arrays.isPresent(), "Arrays.equals should resolve against the JDK");
+        assertEquals("java.util.Arrays.equals(byte[], byte[])", arrays.get().signature());
+        assertNull(arrays.get().declFile(), "JDK target → external decl (no project file:line)");
+
+        // JdkCalls.java:14 `System.out.println("hi");` — `println` token at column 22.
+        Optional<ResolvedRef> println = engine.resolveMethodCall(unit, new Position(14, 22));
+        assertTrue(println.isPresent(), "PrintStream.println should resolve against the JDK");
+        assertEquals("java.io.PrintStream.println(java.lang.String)", println.get().signature());
+    }
+
+    /** A project type's JDK supertype resolves through the hierarchy (the load-bearing-intermediate case). */
+    @Test
+    void resolvesJdkSupertypeInHierarchy() throws Exception {
+        JavaParserEngine engine = jdkResolveEngine();
+        ParsedUnit unit = engine.parse(JDK_RESOLVE.resolve("JdkCalls.java"));
+
+        // JdkCalls.java:8 `public class JdkCalls implements Comparable<JdkCalls> {` — `Comparable` at col 34.
+        Optional<ResolvedType> comparable = engine.resolveType(unit, new Position(8, 34));
+        assertTrue(comparable.isPresent(), "the JDK supertype Comparable should resolve");
+        assertEquals("java.lang.Comparable", comparable.get().fqn());
+    }
 }
