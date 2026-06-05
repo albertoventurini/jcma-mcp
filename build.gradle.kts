@@ -46,9 +46,9 @@ tasks.test {
 }
 
 graalvmNative {
-    // The native plugin does not inherit `java.toolchain`; point its launcher at the detected
-    // GraalVM (SDKMAN 25.0.2-graalce) explicitly so `nativeCompile` uses native-image, not the
-    // Temurin JAVA_HOME.
+    // The native plugin does not inherit `java.toolchain`; without this it resolves native-image
+    // from JAVA_HOME (Temurin here) and fails "JDK isn't a GraalVM distribution". Point its
+    // launcher at the detected GraalVM (SDKMAN 25.0.2-graalce) explicitly. Don't remove.
     binaries.all {
         javaLauncher = javaToolchains.launcherFor {
             languageVersion = JavaLanguageVersion.of(25)
