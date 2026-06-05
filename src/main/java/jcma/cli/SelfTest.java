@@ -6,6 +6,12 @@ import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ParserConfiguration.LanguageLevel;
 import com.github.javaparser.ast.CompilationUnit;
 
+import jcma.index.Moniker;
+import jcma.index.Range;
+import jcma.index.Symbol;
+import jcma.index.SymbolKind;
+import jcma.index.SymbolStore;
+
 import java.io.PrintStream;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -14,6 +20,8 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.List;
+import java.util.OptionalInt;
 
 /**
  * Native-image smoke harness — ported from M0 Spike C ({@code SpikeC.cap()/selftest()}). Each
@@ -39,6 +47,7 @@ final class SelfTest {
         boolean ok = true;
         ok &= cap(out, "parse", SelfTest::capParse);
         ok &= cap(out, "mmap", SelfTest::capMmap);
+        ok &= cap(out, "store", SelfTest::capStore);
         out.println(ok ? "ALL PASS" : "SOME FAIL");
         return ok ? 0 : 1;
     }
@@ -113,6 +122,38 @@ final class SelfTest {
             }
         } finally {
             Files.deleteIfExists(f);
+        }
+    }
+
+    /**
+     * Capability: round-trip a tiny {@link jcma.index.SymbolStore} through the real FFM write/read
+     * path (the §5.1 columnar store, not the generic {@code capMmap} struct). Proves the production
+     * store's {@code Arena}+{@code FileChannel.map} path survives native-image, the task-03 native
+     * smoke.
+     */
+    static void capStore() throws Exception {
+        Path dir = Files.createTempDirectory("jcma-selftest-store");
+        Path seg = dir.resolve(SymbolStore.FILE_NAME);
+        try {
+            String type = Moniker.forType(Moniker.forPackage("demo"), "Greeter");
+            String greet = Moniker.forMethod(type, "greet", List.of());
+            SymbolStore.write(seg, List.of(
+                    new Symbol(type, SymbolKind.CLASS, 0, null, 0, new Range(1, 1, 3, 1), "Greeter", null),
+                    new Symbol(greet, SymbolKind.METHOD, 0, type, 0, new Range(2, 3, 2, 20),
+                            "greet", "java.lang.String greet()")));
+            try (SymbolStore store = SymbolStore.load(seg)) {
+                OptionalInt id = store.idOf(greet);
+                if (id.isEmpty()) {
+                    throw new IllegalStateException("store: greet moniker did not resolve");
+                }
+                Symbol s = store.symbol(id.getAsInt());
+                if (s.kind() != SymbolKind.METHOD || !type.equals(s.enclosingMoniker())) {
+                    throw new IllegalStateException("store: round-trip mismatch: " + s);
+                }
+            }
+        } finally {
+            Files.deleteIfExists(seg);
+            Files.deleteIfExists(dir);
         }
     }
 }

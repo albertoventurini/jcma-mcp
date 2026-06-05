@@ -49,6 +49,9 @@ public final class Main {
             case "resolve" -> {
                 return resolve(args, out, err);
             }
+            case "index-dump" -> {
+                return IndexDump.run(args, out, err);
+            }
             default -> {
                 err.println("jcma: unknown subcommand '" + cmd + "'");
                 usage(err);
@@ -128,6 +131,8 @@ public final class Main {
                   resolve <file> <line:col>
                                        resolve the symbol at a 1-based position; print its
                                        FQN, signature, and declaration site
+                  index-dump --symbols <indexDir>
+                                       list the symbols + monikers in a persisted index store
                 """);
     }
 }

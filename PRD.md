@@ -379,6 +379,13 @@ java-lsp/                      (consider renaming, e.g. jcma/)
 - **Build tool for the project itself:** Gradle vs Maven (Gradle has the more mature
   native-image plugin story).
 - **Index persistence format:** *decided* — custom memory-mapped store (§5.1). Remaining sub-
-  decisions: exact moniker scheme, overlay/compaction trigger policy, whether the trigram index
-  is heap-resident or mmap'd, and trigram-search ranking.
+  decisions: overlay/compaction trigger policy, whether the trigram index is heap-resident or
+  mmap'd, and trigram-search ranking.
+  - **Moniker scheme:** *decided (M1 Task-03)* — SCIP-style structured string, built bottom-up so
+    descriptors compose by concatenation (each self-terminates): package `com.acme.foo` →
+    `com/acme/foo/` (dots→`/`, trailing `/`; default package → empty); type → `…Bar#` (nested:
+    `…Bar#Baz#`); method → `…Bar#doIt(int,java.lang.String).` (comma-joined FQN param types,
+    trailing `.`); constructor → method named `<init>`; field/term → `…Bar#value.`. A *local*
+    scheme (no package-manager/version coordinates); jar/JDK symbols take the same shape keyed by
+    FQN. Implemented in `jcma.index.Moniker`.
 - **Exact navigation-correctness bar** for the M0 go/fall-back gate.

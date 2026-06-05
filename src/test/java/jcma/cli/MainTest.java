@@ -64,6 +64,7 @@ class MainTest {
         assertEquals(0, r.exit(), "selftest should pass on the JVM: " + r.out() + r.err());
         assertTrue(r.out().contains("parse"), "selftest should report the parse capability: " + r.out());
         assertTrue(r.out().contains("mmap"), "selftest should report the mmap capability: " + r.out());
+        assertTrue(r.out().contains("store"), "selftest should report the §5.1 store capability: " + r.out());
         assertTrue(r.out().contains("PASS"), "selftest should report PASS lines: " + r.out());
     }
 }
