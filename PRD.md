@@ -93,8 +93,13 @@ listed under Open Questions.
   resolution can resolve incorrectly or fail. Acceptable for *navigation*; validated in spike.
 - **JavaSymbolSolver perf/memory at scale:** limited caching, can re-resolve aggressively.
   This is the #1 technical risk → gated by Milestone 0.
-- **Native-image reflection config:** SymbolSolver's reflection type-solvers + any MCP library
-  need GraalVM reachability metadata. Known, solved-in-principle, but fiddly → validated in spike.
+- **Native-image symbol resolution = byte-parsing, not reflection** (refined in M1 Task-02): source
+  and third-party jars resolve by parsing bytes off disk (jars need `--enable-url-protocols=jar`),
+  with **zero** per-project reachability metadata. The JDK is the exception — `ReflectionTypeSolver`
+  uses runtime reflection, which native-image can't serve for an *arbitrary* target JDK; it is
+  replaced by a host-derived, fingerprint-cached JDK **signature** index (M1 Task-02b). Only jcma's
+  own deps + any MCP library still need reachability metadata (agent-traced). See M0-RESULTS §"Spike
+  C" #3.
 
 ### Contingency / reversibility
 The engine sits behind an **`AnalysisEngine` interface**. If the Milestone 0 spike fails its

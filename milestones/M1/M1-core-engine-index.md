@@ -121,6 +121,7 @@ java-lsp/
 |---|---|---|
 | 1 | [task-01-scaffolding.md](tasks/task-01-scaffolding.md) | Gradle+GraalVM scaffold; native `jcma` binary from day one |
 | 2 | [task-02-engine-workspace-classpath.md](tasks/task-02-engine-workspace-classpath.md) | `AnalysisEngine` + JavaParser impl + workspace/classpath |
+| 2b | [task-02b-jdk-type-solver.md](tasks/task-02b-jdk-type-solver.md) | Native JDK resolution: host-derived, fingerprint-cached signature index (replaces `ReflectionTypeSolver` in the native path) |
 | 3 | [task-03-symbol-columns.md](tasks/task-03-symbol-columns.md) | Columnar symbol store + moniker↔int32 + string arena (FFM) |
 | 4 | [task-04-csr-occurrences.md](tasks/task-04-csr-occurrences.md) | CSR fwd/rev adjacency + occurrences + edge-type enum |
 | 5 | [task-05-trigram-index.md](tasks/task-05-trigram-index.md) | Trigram name index (name search + candidate pruning) |
@@ -149,7 +150,10 @@ java-lsp/
 - **Trigram postings: heap vs mmap** (Task 5) — recommend mmap. *(PRD §11)*
 - **Overlay/compaction trigger policy** (Task 6) — size/edit-count threshold; pick + record.
 - **Hash algo** (Task 8) — pure-Java xxHash64 (chosen for native friendliness). *(PRD §11/M0)*
-- **Reflection-scaling under native-image** (Task 2) — does agent-traced metadata cover
-  `JarTypeSolver` over arbitrary jars? M0 only proved the minimal resolve; confirm early.
+- **Reflection-scaling under native-image** (Task 2 / 2b) — *split & partly resolved.* **Jars
+  (Task 2):** byte-parse, not reflection — works with `--enable-url-protocols=jar`, zero per-project
+  metadata. **JDK (Task 2b):** `ReflectionTypeSolver` can't resolve arbitrary JDK targets natively
+  (can't pre-seed an unknown JDK); fix = host-derived, fingerprint-cached signature index. See
+  M0-RESULTS §"Spike C" #3.
 </content>
 </invoke>
