@@ -1,9 +1,10 @@
-# M0 Results — **provisional: GO (pending C)**
+# M0 Results — **GO**
 
-> Decision memo for [M0-de-risking-spike.md](M0-de-risking-spike.md). **Spikes A (resolution
-> accuracy — the #1 risk), B (perf/memory — the #1 *technical* risk), and D (incremental mmap
-> format) are complete and GREEN.** Only Spike C (native-image) remains; the final GO/FALLBACK is
-> gated on it. Nothing so far triggers the javac-hybrid fallback.
+> Decision memo for [M0-de-risking-spike.md](M0-de-risking-spike.md). **All four spikes complete
+> and GREEN — A (resolution accuracy, the #1 risk), B (perf/memory, the #1 *technical* risk),
+> C (native-image, the last gate), D (incremental mmap format).** Nothing triggered the
+> javac-hybrid fallback. **Final verdict: GO** on the JavaParser + JavaSymbolSolver +
+> GraalVM-native-image + custom-mmap-store stack (PRD §4/§5.1/§8).
 >
 > Throwaway harness + raw artifacts under [`m0-spike/`](m0-spike/) (`out/` is gitignored;
 > reproduce via `m0-spike/README.md`). Engine: `javaparser-symbol-solver-core:3.28.2`,
@@ -15,7 +16,7 @@
 | G1 coverage         | ≥ 97% resolvable occurrences resolve (safe-degrading misses) | **99.61%** jackson / 99.48% commons | ✅ |
 | G2 go-to-def        | ≥ 99% correct (silent-wrong is the harmful mode) | **100%** (147/147, commons sample) | ✅ |
 | G3 find-refs recall | ≥ 98% recall + unconfirmed-tail mandatory | **100%** recall, ~0% FP (10 symbols) | ✅ |
-| G4 native-image     | builds & parse+resolve+mmap+stdio run in binary | — | ⏳ Spike C |
+| G4 native-image     | builds (no-fallback) & parse+resolve+mmap+stdio run in binary | **all 4 PASS**; ~27 MB binary, **~14 ms** start, **25.8 MB** RSS | ✅ |
 | G5 throughput       | parse ~100k LOC < 2s parallel | **0.48s** for 135k LOC (281k LOC/s, 14 cores) | ✅ |
 | G6 memory           | live retained set bounded under sustained resolution | **flat ~310 MB** live set across full 135k-LOC sweep (committed RSS deferred to native) | ✅ |
 | G7 latency          | cold per-file resolve p50 reasonable; warm find-refs within few× 200ms | per-file p50 **4 ms**; warm find_references worst **262 ms** | ✅ |
@@ -77,8 +78,32 @@ directions**) with an LSM **base + indexed overlay + compaction**, moniker-stabl
 - The FFM read/write path worked under the JVM — **seeds Spike C's "FFM mmap under native-image"
   check** (the one remaining unknown).
 
-## Native-image reachability config needed (Spike C)
-— pending (the last gate) —
+## Native-image (Spike C) — full detail in `m0-spike/out/spikeC-results.md`
+GraalVM CE **25.0.2**; one binary `m0.SpikeC` with two modes exercising all four risky
+capabilities. **G4 PASS:** `--no-fallback` build (a real native image, no JVM fallback) + parse,
+resolve (`ReflectionTypeSolver` JDK reflection **and** `JavaParserTypeSolver` project resolve),
+FFM mmap, and the MCP stdio loop **all run in the binary**.
+
+- **§8 targets, first native measurement:** cold start **~14 ms** (best of 12, runs the *full*
+  parse+resolve+mmap — not an empty start) vs **<100 ms**; **Max RSS 25.8 MB** under the full
+  resolve sweep vs **<100 MB**; binary **~27 MB**. This re-baselines Spike B's JVM ~310 MB live /
+  ~1.37 GB committed RSS down to **~26 MB native** — the §8 memory/startup bet holds by a wide
+  margin (the whole reason the core avoids `javac`).
+- **Reachability config (the M1 seed, committed):** the native-image agent's **pure output**
+  (`src/main/resources/META-INF/native-image/reachability-metadata.json`, 14 reflection types) was
+  **sufficient — no hand-edited reflection entries needed.** The feared SymbolSolver reflection was
+  tame: `PropertyMetaModel.getValue` enumerates `getDeclaredFields()` only for the **two** non-empty
+  `NodeList` properties (`FieldDeclaration.variables`, `VariableDeclarationExpr.variables`), which
+  the agent captured exactly; an A/B build confirmed the bare `fields` entry suffices.
+- **Two documented build findings (what the gate existed to surface):**
+  1. **Metadata must be bundled into the jar** — sequence the build *agent → `mvn package` →
+     `native-image`*; package-before-trace ships a config-less jar and parse/resolve die with
+     `NoSuchFieldError: variables`.
+  2. **`Arena.ofShared()` needs `-H:+UnlockExperimentalVMOptions -H:+SharedArenaSupport`** (else
+     `UnsupportedFeatureError` at runtime). M1 carries this flag — the §5.1 store wants a long-lived
+     mmap shared across query threads.
+- Final build: `native-image --no-fallback --enable-native-access=ALL-UNNAMED
+  -H:+UnlockExperimentalVMOptions -H:+SharedArenaSupport -cp target/m0-spike.jar m0.SpikeC -o out/spikec`.
 
 ## M1 requirements surfaced by Spike A
 1. **Mandatory "unconfirmed tail":** never present a find-refs/find-impls set as exhaustive when
@@ -103,11 +128,28 @@ directions**) with an LSM **base + indexed overlay + compaction**, moniker-stabl
    is gone; the moniker persists as a node with no declaration (consistent with monikers naming
    never-parsed dependency symbols + validate-on-read). Compaction must preserve these.
 
-## Recommendation
-**Spikes A + B + D: GO.** Accuracy holds (0% silent-wrong, all misses safe-degrading); the #1
+## M1 requirements surfaced by Spike C
+1. **Build pipeline order is load-bearing:** *agent-trace → `mvn package` → `native-image`*. M1's
+   build must (re)generate `META-INF/native-image/` from a trace that exercises the real tool
+   surface, then bundle it before the native build. Seed config committed under `m0-spike/`.
+2. **Carry `-H:+UnlockExperimentalVMOptions -H:+SharedArenaSupport`** for the FFM mmap store (or
+   switch to confined arenas — but shared matches the §5.1 cross-thread mmap intent).
+3. **Reflection-scaling is an open M1 question, not a G4 failure:** the minimal resolve needed
+   zero hand-written reflection config, but the product resolves *arbitrary* project/JDK/jar
+   symbols (`JarTypeSolver` over real jars). Whether agent-traced metadata scales to that surface,
+   or wants a native-friendlier solver strategy, is an early-M1 spike (Spike C did not run the
+   `JarTypeSolver` stretch).
+
+## Recommendation — **GO**
+**All four spikes GREEN; proceed on the JavaParser + JavaSymbolSolver + GraalVM-native-image +
+custom-mmap-store stack.** Accuracy holds (0% silent-wrong, all misses safe-degrading); the #1
 technical risk is disproven (SymbolSolver live set flat/bounded; throughput + latency under
-budget); and the trickiest store mechanism round-trips correctly with ~1× overlay overhead. Only
-**Spike C** (native-image — re-baselines memory/startup, validates the FFM read path Spike D
-exercised, where the §8 native targets get tested) stands between here and the final M0
-GO/FALLBACK. Caveats: G2/G3 judged by reading code on commons-lang (jackson correctness not yet
-sampled); Spike B JVM-only/observational; Spike D on a synthetic graph.
+budget); the trickiest store mechanism round-trips correctly with ~1× overlay overhead; and the
+last gate — native-image — **builds no-fallback and runs all four risky capabilities**, with the
+§8 memory/startup story *confirmed natively* (**~26 MB RSS, ~14 ms start** — an order of magnitude
+inside the <100 MB / <100 ms targets, and far below Spike B's JVM ~310 MB / ~1.37 GB). The feared
+SymbolSolver reflection needed only the agent's own output. **Nothing triggered the javac-hybrid
+fallback.** Caveats (for M1 ratification, none GO-blocking): G2/G3 judged by reading code on
+commons-lang (jackson correctness not yet sampled); Spike B JVM-only/observational; Spike D on a
+synthetic graph; Spike C proved the *minimal* native resolve — arbitrary-symbol reflection scaling
+is an early-M1 finding.

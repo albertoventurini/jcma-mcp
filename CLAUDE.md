@@ -32,6 +32,8 @@ histogram, Spike-B perf curves), not just its GO/FALLBACK verdict — don't pre-
   decision changes; PRD §11 tracks what's still undecided.
 - **A milestone doc downstream of a gate is written _after_ the gate fires** (or carries
   provisional markers). Don't plan against assumptions a gate exists to validate.
-- **M0 code is throwaway** — minimal is fine; deleted after the decision memo. M1 starts clean.
+- **M0 spike code is kept, not deleted** — minimal/ugly is fine, but it's a valued reference for
+  later stages, so it stays under `milestones/m0-spike/`. M1 starts as fresh production code
+  (doesn't extend the spikes), but the spikes are retained, not thrown away.
 - Running autonomously: follow each milestone's **Execution notes** — proceed on proposed
   defaults, record the choices made, block on a human only when genuinely stuck.

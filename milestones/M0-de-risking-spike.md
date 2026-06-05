@@ -1,6 +1,7 @@
 # Milestone 0 — De-risking spike
 
-> **Type:** gate, not a deliverable. The code here is throwaway.
+> **Type:** gate, not a deliverable. The code is minimal/scrappy but **kept as a reference for
+> later stages** (not deleted).
 > **Status:** not started
 > **Estimated effort:** ~3–5 focused days
 > **Predecessor:** none · **Blocks:** M1 (committing to the engine + index format)
@@ -17,8 +18,9 @@ runs as a native-image**, (D) the **incremental mmap index format** can be mutat
 full rescan. Any gate that fails triggers the documented fallback to the **javac-hybrid on
 HotSpot** engine (PRD §4 Contingency) — better to learn that now than in month three.
 
-We are *not* building product here. Minimal, ugly, throwaway code is correct. Delete it after
-the decision memo is written; M1 starts clean.
+We are *not* building product here. Minimal, ugly code is correct. **Keep it** after the decision
+memo is written — the spikes are a useful reference for later stages; M1 starts as fresh
+production code rather than extending them.
 
 ---
 
@@ -148,8 +150,8 @@ Check both out at a pinned tag/commit (record it — Spike D's git-accelerator i
 
 ## Deliverables
 
-1. **Throwaway spike code** under `milestones/m0-spike/` (or a scratch branch) — not merged into
-   M1.
+1. **Spike code** under `milestones/m0-spike/` — kept as a reference (not deleted); M1 starts as
+   fresh production code rather than extending it.
 2. **`milestones/M0-RESULTS.md`** — the decision memo, the *real* output of M0:
    - the gate table with **actual** measured values filled in,
    - the Spike-A **failure-cause histogram**,

@@ -3,8 +3,10 @@
 De-risking spike for `jcma` — see [`../M0-de-risking-spike.md`](../M0-de-risking-spike.md).
 **Throwaway code:** deleted after `M0-RESULTS.md` is written; M1 starts clean.
 
-This session built the **harness only** (project + corpus + wiring smoke). The gated spikes
-(A accuracy, B perf/memory, C native-image, D incremental format) are **not run yet**.
+All four gated spikes (A accuracy, B perf/memory, C native-image, D incremental format) are
+**complete and GREEN** — verdict **GO** in [`../M0-RESULTS.md`](../M0-RESULTS.md). The wiring-smoke
+section below is the original harness check; per-spike reproduce + raw artifacts follow / live in
+`out/`.
 
 ## Pinned versions
 
@@ -14,7 +16,7 @@ This session built the **harness only** (project + corpus + wiring smoke). The g
 | Engine dep | `com.github.javaparser:javaparser-symbol-solver-core:3.28.2` (documents Java 1–25) |
 | Accuracy/labeling repo | apache/commons-lang @ `rel/commons-lang-3.20.0` — SHA `598dfc163b8b410fb3bb8794521206ec8dcec82a` |
 | Scale/perf repo | FasterXML/jackson-databind @ `jackson-databind-2.20.2` — SHA `34097b77d41b7ff835fdbe9bf274b96a0c640df9` |
-| Native-image distro (Spike C, later) | GraalVM CE for JDK 25 (SDKMAN; not installed yet) |
+| Native-image distro (Spike C) | GraalVM CE 25.0.2 (`25.0.2-graalce` via SDKMAN); `mvn` stays on Temurin |
 
 Source roots: both repos use `src/main/java` (commons-lang 259 files, jackson-databind 481).
 
@@ -66,7 +68,36 @@ Smoke only (a 60-file slice, not the gated measurement). Notes for Spike A:
   failure-cause histogram (generics/overloads/lambdas/var/…), over the **whole** repo, not a
   slice — not a pass/fail here.
 
-## Next (after review) — gated spikes, see M0 doc
-A → B (reuse A harness) → C (needs GraalVM install) → D (independent). Output:
-`../M0-RESULTS.md` decision memo (gate table + failure histogram + reachability config +
-GO/FALLBACK).
+## Spike C — native-image (reproduce)
+
+The native build needs GraalVM on PATH; `mvn` stays on Temurin. Order matters — **trace →
+package → build** (package-before-trace ships a config-less jar):
+
+```sh
+GVM=~/.sdkman/candidates/java/25.0.2-graalce
+CFG=src/main/resources/META-INF/native-image
+
+# 1. trace reachability metadata on the GraalVM JVM, both run modes (agent → committed M1 seed)
+mvn -q package                                                    # build the jar to trace against
+$GVM/bin/java -agentlib:native-image-agent=config-output-dir=$CFG \
+  --enable-native-access=ALL-UNNAMED -cp target/m0-spike.jar m0.SpikeC selftest
+$GVM/bin/java -agentlib:native-image-agent=config-merge-dir=$CFG \
+  --enable-native-access=ALL-UNNAMED -cp target/m0-spike.jar m0.SpikeC mcp < out/scripted-initialize.jsonl
+
+# 2. re-package so META-INF/native-image is bundled into the jar, THEN build the binary
+mvn -q package
+$GVM/bin/native-image --no-fallback --enable-native-access=ALL-UNNAMED \
+  -H:+UnlockExperimentalVMOptions -H:+SharedArenaSupport \
+  -cp target/m0-spike.jar m0.SpikeC -o out/spikec
+
+# 3. run + measure
+out/spikec selftest                          # parse + resolve + mmap → ALL PASS
+out/spikec mcp < out/scripted-initialize.jsonl   # initialize + tools/list JSON-RPC
+```
+
+Result: G4 PASS — all four capabilities run natively; ~27 MB binary, ~14 ms start, 25.8 MB RSS.
+Full detail in `out/spikeC-results.md`; verdict in `../M0-RESULTS.md`.
+
+## Spikes A/B/D — see the decision memo
+`../M0-RESULTS.md` (gate table + failure histogram + reachability config + GO/FALLBACK), with raw
+artifacts under `out/` (gitignored).
