@@ -1,6 +1,11 @@
 # Build output
 target/
 *.class
+
+# Gradle (M1 build)
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
 # maven-shade-plugin generated
 dependency-reduced-pom.xml
 
