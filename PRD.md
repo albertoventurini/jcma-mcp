@@ -125,7 +125,7 @@ future javac-backed precision mode.
                     │   └─ JavaParser + JavaSymbolSolver    │   ← swappable; javac-hybrid = fallback
                     ├──────────────────────────────────────┤
                     │  Index  (custom mmap store, §5.1)     │
-                    │   • trigram name index   (heap)       │
+                    │   • trigram name index   (mmap)       │
                     │   • symbol columns + CSR graph (mmap) │   ← edges stored both directions
                     │   • immutable base + overlay (LSM)    │   ← incremental, bg-compacted
                     │   • per-file fingerprint sz/mtime/hash│
@@ -180,10 +180,11 @@ fwd adjacency (CSR) · rev adjacency (CSR) · occurrences (per-file slices) ·
 resolution state (per-occurrence: unresolved|resolved|stale) · trigram name index
 ```
 **CSR (compressed sparse row)** = one `offset[symbolId]` array + a flat `targets[]` array:
-compact, cache-friendly traversal. **Memory payoff:** only the trigram index + small bounded
-caches sit in the Java heap; the big arrays live in the mmap'd file and the OS page cache
-holds only the working set → **RSS scales with what you touch, not index size**, and warm
-startup is "mmap + go" (no deserialization → serves the sub-100ms target).
+compact, cache-friendly traversal. **Memory payoff:** only small bounded caches sit in the Java
+heap; the big arrays — including the trigram name index (M1 Task-05: mmap'd, not heap-resident) —
+live in the mmap'd file and the OS page cache holds only the working set → **RSS scales with what
+you touch, not index size**, and warm startup is "mmap + go" (no deserialization → serves the
+sub-100ms target).
 
 ### Lazy-resolve-and-cache — reverse edges are a *byproduct* of forward resolution
 The unit of resolution is a **file's occurrences, not a symbol** — so we never do a
@@ -379,8 +380,13 @@ java-lsp/                      (consider renaming, e.g. jcma/)
 - **Build tool for the project itself:** Gradle vs Maven (Gradle has the more mature
   native-image plugin story).
 - **Index persistence format:** *decided* — custom memory-mapped store (§5.1). Remaining sub-
-  decisions: overlay/compaction trigger policy, whether the trigram index is heap-resident or
-  mmap'd, and trigram-search ranking.
+  decisions: overlay/compaction trigger policy. **Trigram index — *decided (M1 Task-05)*:** mmap'd
+  (not heap-resident), consistent with the symbol/CSR segments so the heap stays bounded and RSS
+  scales with the trigrams a query touches; **case-sensitive** matching (an agent queries exact
+  identifiers and find-refs name-pruning is case-sensitive Java); ranking is exact → prefix →
+  mid-substring, tie-broken by name length, then lexicographic, then id; queries shorter than a
+  trigram fall back to verify-against-all. A case-insensitive variant stays additive (a second
+  case-folded posting set under a bumped segment version). Implemented in `jcma.index.TrigramIndex`.
   - **Moniker scheme:** *decided (M1 Task-03)* — SCIP-style structured string, built bottom-up so
     descriptors compose by concatenation (each self-terminates): package `com.acme.foo` →
     `com/acme/foo/` (dots→`/`, trailing `/`; default package → empty); type → `…Bar#` (nested:

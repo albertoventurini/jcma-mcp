@@ -52,6 +52,9 @@ public final class Main {
             case "index-dump" -> {
                 return IndexDump.run(args, out, err);
             }
+            case "search" -> {
+                return Search.run(args, out, err);
+            }
             default -> {
                 err.println("jcma: unknown subcommand '" + cmd + "'");
                 usage(err);
@@ -135,6 +138,9 @@ public final class Main {
                                        list the symbols + monikers in a persisted index store
                   index-dump --edges <indexDir> <moniker>
                                        print a symbol's fwd/rev neighbours with edge types
+                  search <indexDir> <query>
+                                       ranked symbols whose name contains <query>
+                                       (case-sensitive), read from the trigram index
                 """);
     }
 }

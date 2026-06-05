@@ -48,6 +48,7 @@ final class SelfTest {
         ok &= cap(out, "parse", SelfTest::capParse);
         ok &= cap(out, "mmap", SelfTest::capMmap);
         ok &= cap(out, "store", SelfTest::capStore);
+        ok &= cap(out, "trigram", SelfTest::capTrigram);
         out.println(ok ? "ALL PASS" : "SOME FAIL");
         return ok ? 0 : 1;
     }
@@ -88,6 +89,35 @@ final class SelfTest {
         long types = r.getResult().get().getTypes().size();
         if (types != 1) {
             throw new IllegalStateException("expected 1 type, got " + types);
+        }
+    }
+
+    /**
+     * Capability: round-trip a {@link jcma.index.TrigramIndex} through the real FFM write/read path
+     * and run a substring query — proves the task-05 mmap'd trigram postings + binary-searched
+     * trigram keys survive native-image (the §5.1 name-search read path).
+     */
+    static void capTrigram() throws Exception {
+        Path dir = Files.createTempDirectory("jcma-selftest-trigram");
+        Path seg = dir.resolve(jcma.index.TrigramIndex.FILE_NAME);
+        try {
+            jcma.index.TrigramIndex.write(seg, List.of(
+                    new jcma.index.TrigramIndex.Entry("Greeter", 0, 0),
+                    new jcma.index.TrigramIndex.Entry("greet", 1, 0),
+                    new jcma.index.TrigramIndex.Entry("render", 2, 1)));
+            try (jcma.index.TrigramIndex idx = jcma.index.TrigramIndex.load(seg)) {
+                List<Integer> hits = idx.searchSymbols("reet"); // substring of Greeter + greet, not render
+                if (!hits.contains(0) || !hits.contains(1) || hits.contains(2)) {
+                    throw new IllegalStateException("trigram: unexpected search result " + hits);
+                }
+                int[] files = idx.candidateFiles("end"); // only "render", in file 1
+                if (files.length != 1 || files[0] != 1) {
+                    throw new IllegalStateException("trigram: unexpected prune " + java.util.Arrays.toString(files));
+                }
+            }
+        } finally {
+            Files.deleteIfExists(seg);
+            Files.deleteIfExists(dir);
         }
     }
 
