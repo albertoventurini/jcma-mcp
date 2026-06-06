@@ -58,6 +58,15 @@ public final class Main {
             case "stats" -> {
                 return Stats.run(args, out, err);
             }
+            case "index" -> {
+                return Index.run(args, out, err);
+            }
+            case "compact" -> {
+                return Compact.run(args, out, err);
+            }
+            case "outline" -> {
+                return Outline.run(args, out, err);
+            }
             default -> {
                 err.println("jcma: unknown subcommand '" + cmd + "'");
                 usage(err);
@@ -146,6 +155,11 @@ public final class Main {
                                        (case-sensitive), read from the trigram index
                   stats <indexDir>     base/overlay sizes, overlay-file count, and the
                                        overlay/base ratio the compaction policy reasons about
+                  index <repo> [indexDir]
+                                       cold full index of a repo (defaults to <repo>/.jcma);
+                                       reports files / symbols / LOC-per-second
+                  compact <indexDir>   fold the overlay into a fresh base
+                  outline <file>       print a file's declaration containment tree
                 """);
     }
 }
