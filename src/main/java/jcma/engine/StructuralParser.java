@@ -37,8 +37,14 @@ import java.util.List;
  */
 public final class StructuralParser {
 
+    // RAW (not JAVA_25): we want the grammar (which accepts all syntax) but NOT the post-parse
+    // language-level validators. Those validators read node properties via JavaParser's reflective
+    // meta-model (PropertyMetaModel.getValue → getDeclaredFields by name), which under native-image
+    // throws NoSuchFieldError for any AST field the build trace didn't happen to register (e.g.
+    // UnionType.elements on a multi-catch). We surface no diagnostics (PRD §4), so validation is
+    // pure cost — RAW removes the whole reflective path and is native-image-clean.
     private final ParserConfiguration config =
-            new ParserConfiguration().setLanguageLevel(LanguageLevel.JAVA_25);
+            new ParserConfiguration().setLanguageLevel(LanguageLevel.RAW);
 
     public StructuralParser() {
         // No solver to build — parse-only.

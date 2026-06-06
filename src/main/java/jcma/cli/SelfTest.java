@@ -78,10 +78,12 @@ final class SelfTest {
             }
             """;
 
-    /** Capability: parse an embedded source string at JDK-25 level; assert a clean single-type AST. */
+    /** Capability: parse an embedded source string with the production (RAW) config; assert a clean single-type AST. */
     static void capParse() {
+        // RAW to match the real parsers (StructuralParser/JavaParserEngine): grammar only, no
+        // reflective validator walk — so this self-test exercises the same native path production does.
         JavaParser parser = new JavaParser(
-                new ParserConfiguration().setLanguageLevel(LanguageLevel.JAVA_25));
+                new ParserConfiguration().setLanguageLevel(LanguageLevel.RAW));
         ParseResult<CompilationUnit> r = parser.parse(PARSE_SRC);
         if (!r.isSuccessful() || r.getResult().isEmpty()) {
             throw new IllegalStateException("parse failed: " + r.getProblems());

@@ -7,28 +7,6 @@
   ],
   "reflection": [
     {
-      "type": "com.github.javaparser.ast.body.FieldDeclaration",
-      "fields": [
-        {
-          "name": "variables"
-        }
-      ]
-    },
-    {
-      "type": "com.github.javaparser.ast.expr.VariableDeclarationExpr",
-      "fields": [
-        {
-          "name": "variables"
-        }
-      ]
-    },
-    {
-      "type": "demo"
-    },
-    {
-      "type": "demo.String"
-    },
-    {
       "type": "java.lang.Boolean",
       "jniAccessible": true,
       "methods": [

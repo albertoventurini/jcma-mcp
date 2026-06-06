@@ -73,8 +73,12 @@ public final class JavaParserEngine implements AnalysisEngine {
                 System.err.println("  skip jar (" + e.getMessage() + "): " + jar);
             }
         }
+        // RAW skips the post-parse language-level validators (see StructuralParser): they read node
+        // properties through JavaParser's reflective meta-model, which is a native-image NoSuchFieldError
+        // hazard and gives us nothing (we emit no diagnostics). Symbol resolution is driven by the
+        // SymbolResolver below, independent of the language level, so it is unaffected.
         ParserConfiguration config = new ParserConfiguration()
-                .setLanguageLevel(LanguageLevel.JAVA_25)
+                .setLanguageLevel(LanguageLevel.RAW)
                 .setSymbolResolver(new JavaSymbolSolver(solver));
         this.parser = new JavaParser(config);
     }

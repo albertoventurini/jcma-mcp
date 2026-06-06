@@ -14,6 +14,9 @@ milestones/m0-spike/corpus/
 # M0 spike: generated Spike A artifacts (coverage/histogram/worksheets)
 milestones/m0-spike/out/
 
+# Index output (default <repo>/.jcma store written by `jcma index`)
+.jcma/
+
 # Editor / OS
 .idea/
 *.iml
