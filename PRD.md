@@ -379,8 +379,20 @@ java-lsp/                      (consider renaming, e.g. jcma/)
 - **Naming:** the product is not an LSP — adopt a name reflecting "agent-native Java code map"?
 - **Build tool for the project itself:** Gradle vs Maven (Gradle has the more mature
   native-image plugin story).
-- **Index persistence format:** *decided* — custom memory-mapped store (§5.1). Remaining sub-
-  decisions: overlay/compaction trigger policy. **Trigram index — *decided (M1 Task-05)*:** mmap'd
+- **Index persistence format:** *decided* — custom memory-mapped store (§5.1). **Overlay/compaction
+  trigger policy — *decided (M1 Task-06)*:** compact when the overlay grows to *rival the base*
+  (overlay-log size relative to base size), expressed behind a **swappable policy** (relative ↔
+  absolute ↔ manual) so it can change without touching the store, and **instrumented** (each
+  compaction records overlay/base bytes, ratio at trigger, rewrite duration; each reopen records
+  replayed-edit count + duration) so the threshold is re-calibrated from data, not faith. `jcma
+  compact` forces it manually. Compaction rewrites **all three segments together** (symbols + edges
+  + trigram) atomically, so name search is correct immediately post-compaction. **Overlay durability
+  — *decided (M1 Task-06)*:** the overlay log is **flushed to the OS per edit** (survives process
+  crash; ~µs cost) with **checksummed records**, and treated as a *validated cache* — correctness
+  rests on freshness/validate-on-read (§5.1, Task-08) re-indexing against the actual files, never on
+  the log surviving; a lost or torn log only costs re-parsing, never a wrong answer. `fsync` is
+  reserved for compaction's atomic base swap. Also swappable (→ fsync-per-edit) if data ever
+  demands. **Trigram index — *decided (M1 Task-05)*:** mmap'd
   (not heap-resident), consistent with the symbol/CSR segments so the heap stays bounded and RSS
   scales with the trigrams a query touches; **case-sensitive** matching (an agent queries exact
   identifiers and find-refs name-pruning is case-sensitive Java); ranking is exact → prefix →
@@ -394,4 +406,13 @@ java-lsp/                      (consider renaming, e.g. jcma/)
     trailing `.`); constructor → method named `<init>`; field/term → `…Bar#value.`. A *local*
     scheme (no package-manager/version coordinates); jar/JDK symbols take the same shape keyed by
     FQN. Implemented in `jcma.index.Moniker`.
+- **Observability (cross-cutting) — *decided (M1 Task-06)*:** jcma carries a lightweight, built-in
+  metrics layer so tuning decisions are data-driven rather than guessed. A dependency-free,
+  native-image-friendly registry (plain atomic counters/timers — *not* Micrometer/Prometheus
+  client, which are reflection-heavy and hurt instant-start/low-RSS); surfaced via `jcma stats` +
+  structured stderr diagnostics. Probes are placed at **coarse boundaries** (per file / query /
+  compaction, never inner loops), aggregate locally and publish once, use `LongAdder`/per-task
+  locals to avoid contention, and resolve handles once (no per-event name lookup or allocation).
+  Overhead is **proven** by a metrics-on-vs-no-op benchmark asserted within noise. Each task
+  instruments its own hot paths; the registry + `jcma stats` land in Task-06.
 - **Exact navigation-correctness bar** for the M0 go/fall-back gate.

@@ -125,8 +125,8 @@ java-lsp/
 | 3 | [task-03-symbol-columns.md](tasks/task-03-symbol-columns.md) | Columnar symbol store + moniker↔int32 + string arena (FFM) |
 | 4 | [task-04-csr-occurrences.md](tasks/task-04-csr-occurrences.md) | CSR fwd/rev adjacency + occurrences + edge-type enum |
 | 5 | [task-05-trigram-index.md](tasks/task-05-trigram-index.md) | Trigram name index (name search + candidate pruning) |
-| 6 | [task-06-lsm-overlay-compaction.md](tasks/task-06-lsm-overlay-compaction.md) | LSM base + indexed overlay + compaction + durability |
-| 7 | [task-07-tier1-indexing.md](tasks/task-07-tier1-indexing.md) | Tier-1 structural indexing (parse-only, vthread parallel) |
+| 6 | [task-06-lsm-overlay-compaction.md](tasks/task-06-lsm-overlay-compaction.md) | **LSM store + Tier-1 indexing (merged 06+07) + observability** — base+overlay+compaction+durability, the parse-only `Indexer`, and the metrics registry + `jcma stats` |
+| 7 | [task-07-tier1-indexing.md](tasks/task-07-tier1-indexing.md) | *Merged into task 06* (Tier-1 indexing is task-06 phase P2) |
 | 8 | [task-08-freshness-fingerprints.md](tasks/task-08-freshness-fingerprints.md) | Fingerprints, cold scan, warm-reopen reconciliation |
 | 9 | [task-09-fs-watcher.md](tasks/task-09-fs-watcher.md) | Live FS watcher + stat/hash-on-access backstop |
 | 10 | [task-10-lazy-resolve-cache.md](tasks/task-10-lazy-resolve-cache.md) | Lazy-resolve-and-cache (Tier-2): definition & references |
@@ -148,7 +148,10 @@ java-lsp/
 
 - **Moniker grammar** (Task 3) — concrete SCIP-style scheme. *(PRD §11)*
 - **Trigram postings: heap vs mmap** (Task 5) — recommend mmap. *(PRD §11)*
-- **Overlay/compaction trigger policy** (Task 6) — size/edit-count threshold; pick + record.
+- **Overlay/compaction trigger policy** (Task 6) — *decided:* relative-to-base, swappable policy,
+  instrumented; compaction rewrites all 3 segments incl. trigram. *Overlay durability — decided:*
+  flush-to-OS per edit, checksummed, validated-cache (freshness owns correctness). *Observability —
+  decided:* lightweight native-friendly metrics registry + `jcma stats`, built in Task 6. (PRD §11.)
 - **Hash algo** (Task 8) — pure-Java xxHash64 (chosen for native friendliness). *(PRD §11/M0)*
 - **Reflection-scaling under native-image** (Task 2 / 2b) — *split & partly resolved.* **Jars
   (Task 2):** byte-parse, not reflection — works with `--enable-url-protocols=jar`, zero per-project

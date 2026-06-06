@@ -1,33 +1,7 @@
-# M1 · Task 07 — Tier-1 structural indexing (parse-only, virtual-thread parallel)
-> Build the structural index from a repo; serve outline + name search from it.
+# M1 · Task 07 — Tier-1 structural indexing — **MERGED INTO TASK 06**
 
-## Prerequisites (read first, fresh session)
-- **Done before this:** task-02 (engine/parse), task-03 (SymbolStore), task-04 (Csr/Occurrence),
-  task-05 (TrigramIndex), task-06 (LsmStore).
-- **Read:** PRD §5.1 (Tier-1 structural) + §10 (M1 verification) ; M1 overview ; M0-RESULTS
-  §"Performance & memory (Spike B)".
-- **Port from M0 (reference, don't extend):**
-  - `milestones/m0-spike/src/main/java/m0/SpikeB.java` — virtual-thread parallel parse-only scan driver.
-  - `milestones/m0-spike/src/main/java/m0/SpikeA.java` — `occurrences(cu)` enumeration over the 7
-    node categories, **no `.resolve()`** (Tier-1 is lexical/cheap).
-
-## Protocol (test-first; full version in the overview)
-Write failing tests + fixtures → **STOP for review** → implement → verify.
-
-## Scope — files to create/modify
-- `src/main/java/jcma/index/Indexer.java` — parse-only pass populating symbols, containment
-  (→ outline free), signatures, **unresolved** occurrences + trigram; parallelized across
-  **virtual threads**. No SymbolSolver here.
-- `src/main/java/jcma/cli/` — `index <repo>` (report LOC/s + symbol count), `outline <file>`.
-
-## Tests (red-first)
-- Unit: index a multi-type fixture; assert symbol set + containment tree + outline order.
-- Integration: index commons-lang; assert expected top-level types/method counts present
-  (PRD §10 M1: "assert the persisted index contains expected symbols").
-
-## Manual CLI check
-- `jcma index <repo>` (LOC/s + symbol count); `jcma outline <file>`.
-
-## Done when
-- tests green · native green · cold index of ~100k LOC within "a few seconds" (§Targets).
-</content>
+> **Merged 2026-06-06** into [task-06](task-06-lsm-overlay-compaction.md). A working
+> `jcma index <repo>` needs both the extractor (`Indexer`) and the store (`LsmStore`) at once, so
+> the Tier-1 parse-only indexing scope (`Indexer.java`, `index`/`outline` CLI, the SpikeB/SpikeA
+> ports) now lives there as phase **P2**. This stub is kept so cross-references and the task
+> numbering stay stable; downstream tasks (e.g. task-08) depend on "Indexer + LsmStore" = task-06.
