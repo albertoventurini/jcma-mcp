@@ -44,6 +44,13 @@ public final class Indexer {
     /** Summary of a repo index run (surfaced by {@code jcma index}). */
     public record IndexStats(int files, long loc, int symbols, double seconds) {}
 
+    /** One file to parse-extract under a caller-assigned (stable) {@code fileId} and source-set tag. */
+    public record ParseRequest(int fileId, Path path, SourceSet sourceSet) {}
+
+    /** The result of a parallel parse pass: the per-request {@link FileIndex}es (nulls = parse
+     * failures, positionally aligned with the requests) and the total lines of code read. */
+    public record ParseResult(List<FileIndex> indices, long loc) {}
+
     private final StructuralParser parser = new StructuralParser();
     private final Metrics metrics;
 
@@ -89,25 +96,55 @@ public final class Indexer {
     public IndexStats indexRepo(List<SourceRoot> sourceRoots, LsmStore store) throws IOException {
         List<TaggedFile> files = discover(sourceRoots);
         long t0 = System.nanoTime();
-        AtomicLong loc = new AtomicLong();
 
         // Parse + extract in parallel; ids are the (deterministic) sorted index of each file.
-        List<FileIndex> extracted = new ArrayList<>(files.size());
+        List<ParseRequest> requests = new ArrayList<>(files.size());
+        for (int id = 0; id < files.size(); id++) {
+            requests.add(new ParseRequest(id, files.get(id).path(), files.get(id).set()));
+        }
+        ParseResult parsed = parseAll(requests);
+
+        // Apply sequentially (the store is single-writer), then fold into a fresh base.
+        int symbols = 0;
+        int indexed = 0;
+        for (FileIndex fi : parsed.indices()) {
+            if (fi != null) {
+                store.applyEdit(fi);
+                symbols += fi.symbols().size();
+                indexed++;
+            }
+        }
+        store.compact();
+        double seconds = (System.nanoTime() - t0) / 1e9;
+
+        metrics.counter("index.files").add(indexed);
+        metrics.counter("index.symbols").add(symbols);
+        metrics.timer("index").record(System.nanoTime() - t0);
+        return new IndexStats(indexed, parsed.loc(), symbols, seconds);
+    }
+
+    /**
+     * Parse-extract a set of files in parallel across virtual threads (ported from M0 {@code SpikeB}).
+     * Each {@link ParseRequest} carries the (caller-assigned, stable) file id and source-set tag, so
+     * both the cold {@link #indexRepo} pass and the warm {@code Reconciler} reuse one parse engine. The
+     * returned {@link FileIndex} list is positionally aligned with {@code requests} (a {@code null}
+     * marks a file that failed to parse — logged, never fatal). Does not touch the store.
+     */
+    public ParseResult parseAll(List<ParseRequest> requests) throws IOException {
+        List<FileIndex> extracted = new ArrayList<>(requests.size());
+        AtomicLong loc = new AtomicLong();
         try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
-            List<Future<FileIndex>> futures = new ArrayList<>(files.size());
-            for (int id = 0; id < files.size(); id++) {
-                int fileId = id;
-                TaggedFile tagged = files.get(id);
-                Path file = tagged.path();
+            List<Future<FileIndex>> futures = new ArrayList<>(requests.size());
+            for (ParseRequest req : requests) {
                 futures.add(pool.submit(() -> {
-                    loc.addAndGet(countLines(file));
+                    loc.addAndGet(countLines(req.path()));
                     long parseStart = System.nanoTime();
                     try {
-                        FileIndex fi = indexFile(fileId, file, tagged.set());
+                        FileIndex fi = indexFile(req.fileId(), req.path(), req.sourceSet());
                         metrics.timer("index.parse").record(System.nanoTime() - parseStart); // per file, not per symbol
                         return fi;
                     } catch (IOException e) {
-                        System.err.println("jcma: skip (parse failed): " + file + " — " + e.getMessage());
+                        System.err.println("jcma: skip (parse failed): " + req.path() + " — " + e.getMessage());
                         return null;
                     }
                 }));
@@ -121,24 +158,7 @@ public final class Indexer {
         } catch (ExecutionException e) {
             throw new IOException("indexing failed: " + e.getCause(), e.getCause());
         }
-
-        // Apply sequentially (the store is single-writer), then fold into a fresh base.
-        int symbols = 0;
-        int indexed = 0;
-        for (FileIndex fi : extracted) {
-            if (fi != null) {
-                store.applyEdit(fi);
-                symbols += fi.symbols().size();
-                indexed++;
-            }
-        }
-        store.compact();
-        double seconds = (System.nanoTime() - t0) / 1e9;
-
-        metrics.counter("index.files").add(indexed);
-        metrics.counter("index.symbols").add(symbols);
-        metrics.timer("index").record(System.nanoTime() - t0);
-        return new IndexStats(indexed, loc.get(), symbols, seconds);
+        return new ParseResult(extracted, loc.get());
     }
 
     // ------------------------------------------------------------------ outline → symbols

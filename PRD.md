@@ -225,7 +225,8 @@ agent's Edit tool, `bash sed`, `git checkout/pull`, another editor.
   (the de-moduled JDK signatures). Built **once per JDK version** by a short-lived helper JVM that
   reads the host JDK's own `jrt:/` image, then reused across runs/projects (cache hit = no
   subprocess). This is the native-image substitute for `ReflectionTypeSolver`; the JVM/dev path
-  still reflects directly. *(Currently SHA-free FNV-1a; xxHash64 is the eventual project-wide hash.)*
+  still reflects directly. *(File fingerprints now use xxHash64 (M1 Task-08); this JDK-cache key is
+  still FNV-1a, pending a follow-up migration to the one project-wide hash.)*
 - **Cold start = one full parse-only scan** (only when the persisted index is missing/
   incompatible): read+hash+parse every file, build Tier-1 + trigram. Inherent (can't index
   without reading every file once), parallel, persisted. **Warm reopen ≠ full scan.**
@@ -429,4 +430,12 @@ java-lsp/                      (consider renaming, e.g. jcma/)
   locals to avoid contention, and resolve handles once (no per-event name lookup or allocation).
   Overhead is **proven** by a metrics-on-vs-no-op benchmark asserted within noise. Each task
   instruments its own hot paths; the registry + `jcma stats` land in Task-06.
+- **Freshness hash — *decided (M1 Task-08)*:** **xxHash64**, implemented **pure-Java** (no native
+  lib, no extracted `.so` → minimal native-image reachability), seed 0, over each file's bytes. We
+  need "did the bytes change", not security — a fast non-cryptographic hash. It backs the per-file
+  fingerprint `(size, mtime, contentHash)` in the persisted **file table** (`jcma.workspace.FileTable`),
+  which drives warm-reopen reconciliation: stat-only fast path (size+mtime match → skip), hash only
+  the *suspects* (size/mtime differ) to confirm real change vs. an mtime-lie. The intended one
+  project-wide hash; the M1 Task-02b JDK-signature-cache key (still FNV-1a) migrates to it later.
+  Implemented in `jcma.workspace.Fingerprint`.
 - **Exact navigation-correctness bar** for the M0 go/fall-back gate.

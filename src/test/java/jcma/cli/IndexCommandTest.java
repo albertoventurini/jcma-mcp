@@ -85,6 +85,30 @@ class IndexCommandTest {
     }
 
     @Test
+    void warmReopenReportsZeroReparsedThenOneAfterAnEdit(@TempDir Path repo) throws Exception {
+        // Task 08 manual check: index twice (second is warm, 0 reparsed); edit one file → 1 reparsed.
+        Path src = repo.resolve("src/main/java/com/example");
+        Files.createDirectories(src);
+        Path foo = src.resolve("Foo.java");
+        Files.writeString(foo, "package com.example;\npublic class Foo { public void f() {} }\n");
+        Path indexDir = repo.resolve(".jcma");
+
+        Run first = dispatch("index", repo.toString(), indexDir.toString());
+        assertEquals(0, first.exit(), first.err());
+
+        Run second = dispatch("index", repo.toString(), indexDir.toString());
+        assertEquals(0, second.exit(), second.err());
+        assertTrue(second.out().contains("0 reparsed"),
+                "an unchanged warm reopen reports 0 reparsed: " + second.out());
+
+        // Add a method (changes the file's size) → exactly one file re-parsed.
+        Files.writeString(foo, "package com.example;\npublic class Foo { public void f() {} public void g() {} }\n");
+        Run third = dispatch("index", repo.toString(), indexDir.toString());
+        assertEquals(0, third.exit(), third.err());
+        assertTrue(third.out().contains("1 reparsed"), "one edit → 1 reparsed: " + third.out());
+    }
+
+    @Test
     void usageWhenNoRepo() {
         assertEquals(2, dispatch("index").exit());
     }

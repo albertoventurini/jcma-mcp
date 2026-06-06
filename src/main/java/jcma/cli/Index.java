@@ -7,6 +7,7 @@ import jcma.index.SourceRoot;
 import jcma.index.SourceSet;
 import jcma.obs.Metrics;
 import jcma.obs.Timer;
+import jcma.workspace.Reconciler;
 import jcma.workspace.Workspace;
 
 import java.io.PrintStream;
@@ -50,13 +51,14 @@ final class Index {
 
         try {
             Metrics metrics = Metrics.create();
-            Indexer.IndexStats stats;
+            Reconciler.ReindexStats stats;
             try (LsmStore store = LsmStore.open(indexDir, CompactionPolicy.manual(), metrics)) {
-                stats = new Indexer(metrics).indexRepo(roots, store);
+                stats = new Reconciler(new Indexer(metrics), metrics).reindex(repo, roots, store, indexDir);
             }
-            double locPerSec = stats.seconds() > 0 ? stats.loc() / stats.seconds() : 0;
-            out.printf("indexed %d file(s), %d symbols, %,d LOC in %.2fs (%,.0f LOC/s) → %s%n",
-                    stats.files(), stats.symbols(), stats.loc(), stats.seconds(), locPerSec, indexDir);
+            out.printf("%d reparsed (%d new, %d changed, %d deleted, %d unchanged), "
+                            + "%d symbols, %,d LOC in %.2fs → %s%n",
+                    stats.reparsed(), stats.added(), stats.changed(), stats.deleted(), stats.unchanged(),
+                    stats.symbols(), stats.loc(), stats.seconds(), indexDir);
             Timer.Snapshot compaction = metrics.timerValues()
                     .getOrDefault("compaction", new Timer.Snapshot(0, 0, 0));
             out.printf("compaction: %.1f ms%n", compaction.totalNanos() / 1e6);
