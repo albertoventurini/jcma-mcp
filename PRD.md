@@ -402,10 +402,17 @@ java-lsp/                      (consider renaming, e.g. jcma/)
   - **Moniker scheme:** *decided (M1 Task-03)* — SCIP-style structured string, built bottom-up so
     descriptors compose by concatenation (each self-terminates): package `com.acme.foo` →
     `com/acme/foo/` (dots→`/`, trailing `/`; default package → empty); type → `…Bar#` (nested:
-    `…Bar#Baz#`); method → `…Bar#doIt(int,java.lang.String).` (comma-joined FQN param types,
-    trailing `.`); constructor → method named `<init>`; field/term → `…Bar#value.`. A *local*
-    scheme (no package-manager/version coordinates); jar/JDK symbols take the same shape keyed by
-    FQN. Implemented in `jcma.index.Moniker`.
+    `…Bar#Baz#`); method → `…Bar#doIt(int,String).` (comma-joined param type names **as written in the
+    declaration** — generics erased, arrays/varargs kept as `[]`; *not* resolved to FQNs, since
+    Tier-1 is parse-only); constructor → method named `<init>`; field/term → `…Bar#value.`. A
+    *local* scheme (no package-manager/version coordinates). **Param-type spelling (amended M1
+    Task-06):** a *project* symbol's moniker is always built from its declaration on both tiers —
+    Tier-1 indexing and Tier-2 resolve (task-10) — so they agree by construction; the moniker is an
+    opaque identity key, never parsed for type facts (those come from resolved
+    `HAS_TYPE`/`REFERENCES` edges). *External* jar/JDK symbols, which have no project declaration,
+    take the same shape keyed by the resolved FQN. **Task-10 constraint:** Tier-2 must rebuild a
+    project method's moniker from the declaration AST, not from the resolved FQN signature.
+    Implemented in `jcma.index.Moniker`.
 - **Observability (cross-cutting) — *decided (M1 Task-06)*:** jcma carries a lightweight, built-in
   metrics layer so tuning decisions are data-driven rather than guessed. A dependency-free,
   native-image-friendly registry (plain atomic counters/timers — *not* Micrometer/Prometheus
