@@ -55,6 +55,9 @@ public final class Main {
             case "search" -> {
                 return Search.run(args, out, err);
             }
+            case "stats" -> {
+                return Stats.run(args, out, err);
+            }
             default -> {
                 err.println("jcma: unknown subcommand '" + cmd + "'");
                 usage(err);
@@ -141,6 +144,8 @@ public final class Main {
                   search <indexDir> <query>
                                        ranked symbols whose name contains <query>
                                        (case-sensitive), read from the trigram index
+                  stats <indexDir>     base/overlay sizes, overlay-file count, and the
+                                       overlay/base ratio the compaction policy reasons about
                 """);
     }
 }

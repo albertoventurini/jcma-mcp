@@ -3,6 +3,7 @@ package jcma.index;
 import jcma.engine.FileOutline;
 import jcma.engine.Outline;
 import jcma.engine.StructuralParser;
+import jcma.obs.Metrics;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -44,9 +45,16 @@ public final class Indexer {
     public record IndexStats(int files, long loc, int symbols, double seconds) {}
 
     private final StructuralParser parser = new StructuralParser();
+    private final Metrics metrics;
 
+    /** An indexer with no metrics ({@link Metrics#noop()}). */
     public Indexer() {
-        // Constructs its own parse-only StructuralParser.
+        this(Metrics.noop());
+    }
+
+    /** An indexer that records throughput metrics (files, symbols, per-file parse time) into {@code metrics}. */
+    public Indexer(Metrics metrics) {
+        this.metrics = metrics;
     }
 
     /**
@@ -83,8 +91,11 @@ public final class Indexer {
                 Path file = files.get(id);
                 futures.add(pool.submit(() -> {
                     loc.addAndGet(countLines(file));
+                    long parseStart = System.nanoTime();
                     try {
-                        return indexFile(fileId, file);
+                        FileIndex fi = indexFile(fileId, file);
+                        metrics.timer("index.parse").record(System.nanoTime() - parseStart); // per file, not per symbol
+                        return fi;
                     } catch (IOException e) {
                         System.err.println("jcma: skip (parse failed): " + file + " — " + e.getMessage());
                         return null;
@@ -113,6 +124,10 @@ public final class Indexer {
         }
         store.compact();
         double seconds = (System.nanoTime() - t0) / 1e9;
+
+        metrics.counter("index.files").add(indexed);
+        metrics.counter("index.symbols").add(symbols);
+        metrics.timer("index").record(System.nanoTime() - t0);
         return new IndexStats(indexed, loc.get(), symbols, seconds);
     }
 

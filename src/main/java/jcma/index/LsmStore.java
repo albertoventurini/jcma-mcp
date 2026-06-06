@@ -23,6 +23,8 @@ import java.util.OptionalInt;
 import java.util.Set;
 import java.util.zip.CRC32;
 
+import jcma.obs.Metrics;
+
 /**
  * The LSM index store (PRD §5.1) — the production form of M0 {@code SpikeD.Store}. An immutable,
  * memory-mapped <b>base</b> (the {@link SymbolStore} + {@link Csr} + {@link TrigramIndex} triple) is
@@ -65,6 +67,7 @@ public final class LsmStore implements AutoCloseable {
     private final Path triPath;
     private final Path logPath;
     private final CompactionPolicy policy;
+    private final Metrics metrics;
 
     // The immutable mmap'd base, or null when the index is still cold (no compaction yet).
     private SymbolStore baseSym;
@@ -82,12 +85,13 @@ public final class LsmStore implements AutoCloseable {
     private DataOutputStream logOut;
     private long logBytes;
 
-    private LsmStore(Path indexDir, CompactionPolicy policy) {
+    private LsmStore(Path indexDir, CompactionPolicy policy, Metrics metrics) {
         this.symPath = indexDir.resolve(SymbolStore.FILE_NAME);
         this.edgePath = indexDir.resolve(Csr.FILE_NAME);
         this.triPath = indexDir.resolve(TrigramIndex.FILE_NAME);
         this.logPath = indexDir.resolve(OVERLAY_LOG);
         this.policy = policy;
+        this.metrics = metrics;
     }
 
     /** Open the index at {@code indexDir} with the default policy ({@link CompactionPolicy#relativeToBase}). */
@@ -95,13 +99,19 @@ public final class LsmStore implements AutoCloseable {
         return open(indexDir, CompactionPolicy.relativeToBase(1.0));
     }
 
+    /** Open with the given policy and no metrics ({@link Metrics#noop()}). */
+    public static LsmStore open(Path indexDir, CompactionPolicy policy) throws IOException {
+        return open(indexDir, policy, Metrics.noop());
+    }
+
     /**
      * Open the index at {@code indexDir}: mmap the base segments if present (else an empty base),
      * then replay {@code overlay.log} to rebuild the in-memory overlay (dropping any torn tail).
+     * Compaction + reopen-replay timings are recorded into {@code metrics}.
      */
-    public static LsmStore open(Path indexDir, CompactionPolicy policy) throws IOException {
+    public static LsmStore open(Path indexDir, CompactionPolicy policy, Metrics metrics) throws IOException {
         Files.createDirectories(indexDir);
-        LsmStore store = new LsmStore(indexDir, policy);
+        LsmStore store = new LsmStore(indexDir, policy, metrics);
         store.loadBase();
         store.replayLog();
         store.openLogForAppend();
@@ -237,6 +247,7 @@ public final class LsmStore implements AutoCloseable {
 
     /** Force a compaction: fold the overlay into a fresh base (all three segments) and clear the log. */
     public void compact() throws IOException {
+        long startNanos = System.nanoTime();
         // 1. Gather the live symbol set + edge set: base content (minus overlaid files) ∪ overlay.
         Map<String, Symbol> symByMoniker = new HashMap<>();
         List<MonikerEdge> allEdges = new ArrayList<>();
@@ -304,6 +315,8 @@ public final class LsmStore implements AutoCloseable {
         Files.deleteIfExists(logPath);
         openLogForAppend();
         logBytes = 0;
+
+        metrics.timer("compaction").record(System.nanoTime() - startNanos);
     }
 
     private static Symbol phantom(String moniker) {
@@ -394,9 +407,11 @@ public final class LsmStore implements AutoCloseable {
             logBytes = 0;
             return;
         }
+        long startNanos = System.nanoTime();
         byte[] data = Files.readAllBytes(logPath);
         int pos = 0;
         int validLen = 0;
+        int records = 0;
         while (pos + 4 <= data.length) {
             int len = readIntBE(data, pos);
             int end = pos + 4 + len + 4; // length field + payload + CRC
@@ -411,7 +426,10 @@ public final class LsmStore implements AutoCloseable {
             index(deserialize(data, pos + 4, len));
             pos = end;
             validLen = end;
+            records++;
         }
+        metrics.counter("replay.records").add(records);
+        metrics.timer("replay").record(System.nanoTime() - startNanos);
         if (validLen != data.length) {
             try (FileChannel ch = FileChannel.open(logPath, StandardOpenOption.WRITE)) {
                 ch.truncate(validLen);
