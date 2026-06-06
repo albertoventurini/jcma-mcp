@@ -59,15 +59,24 @@ public final class Indexer {
 
     /**
      * Extract one file's structural content into a {@link FileIndex} under {@code fileId} (parse-only;
-     * no resolution). Used by {@code outline} and by {@link #indexRepo}.
+     * no resolution), tagging its symbols {@link SourceSet#MAIN}. Used by {@code outline}.
      */
     public FileIndex indexFile(int fileId, Path file) throws IOException {
+        return indexFile(fileId, file, SourceSet.MAIN);
+    }
+
+    /**
+     * As {@link #indexFile(int, Path)}, but tagging every extracted symbol with {@code sourceSet}
+     * (PRD §5.1 test-source indexing) — used by {@link #indexRepo} so each file inherits its source
+     * root's tag. The tag is packed into {@link Symbol#flags()} (see {@link SourceSet}).
+     */
+    public FileIndex indexFile(int fileId, Path file, SourceSet sourceSet) throws IOException {
         FileOutline fo = parser.outline(file);
         List<Symbol> symbols = new ArrayList<>();
         List<MonikerEdge> edges = new ArrayList<>();
         String packageMoniker = Moniker.forPackage(fo.packageName());
         for (Outline type : fo.types()) {
-            walk(type, packageMoniker, null, fo.packageName(), fileId, symbols, edges);
+            walk(type, packageMoniker, null, fo.packageName(), fileId, sourceSet, symbols, edges);
         }
         return new FileIndex(fileId, symbols, edges);
     }
@@ -77,8 +86,8 @@ public final class Indexer {
      * threads), apply each {@link FileIndex} through {@code store}, then compact into a fresh base.
      * Returns the run's {@link IndexStats}. A file that fails to parse is skipped (logged), not fatal.
      */
-    public IndexStats indexRepo(List<Path> sourceRoots, LsmStore store) throws IOException {
-        List<Path> files = discover(sourceRoots);
+    public IndexStats indexRepo(List<SourceRoot> sourceRoots, LsmStore store) throws IOException {
+        List<TaggedFile> files = discover(sourceRoots);
         long t0 = System.nanoTime();
         AtomicLong loc = new AtomicLong();
 
@@ -88,12 +97,13 @@ public final class Indexer {
             List<Future<FileIndex>> futures = new ArrayList<>(files.size());
             for (int id = 0; id < files.size(); id++) {
                 int fileId = id;
-                Path file = files.get(id);
+                TaggedFile tagged = files.get(id);
+                Path file = tagged.path();
                 futures.add(pool.submit(() -> {
                     loc.addAndGet(countLines(file));
                     long parseStart = System.nanoTime();
                     try {
-                        FileIndex fi = indexFile(fileId, file);
+                        FileIndex fi = indexFile(fileId, file, tagged.set());
                         metrics.timer("index.parse").record(System.nanoTime() - parseStart); // per file, not per symbol
                         return fi;
                     } catch (IOException e) {
@@ -140,7 +150,7 @@ public final class Indexer {
      * {@code enclosingFqn} is the dotted FQN context for a readable signature.
      */
     private void walk(Outline o, String parentMoniker, String enclosingMoniker, String enclosingFqn,
-            int fileId, List<Symbol> symbols, List<MonikerEdge> edges) {
+            int fileId, SourceSet sourceSet, List<Symbol> symbols, List<MonikerEdge> edges) {
         String moniker;
         String signature;
         String childFqn = enclosingFqn;
@@ -170,13 +180,14 @@ public final class Indexer {
         }
 
         Range range = new Range(o.startLine(), o.startCol(), o.endLine(), o.endCol());
-        symbols.add(new Symbol(moniker, mapKind(o.kind()), 0, enclosingMoniker, fileId, range, o.name(), signature));
+        symbols.add(new Symbol(moniker, mapKind(o.kind()), SourceSet.flagBits(sourceSet),
+                enclosingMoniker, fileId, range, o.name(), signature));
         if (enclosingMoniker != null) {
             edges.add(new MonikerEdge(enclosingMoniker, moniker, EdgeType.CONTAINS, Occurrence.NONE));
         }
         if (isType) {
             for (Outline child : o.children()) {
-                walk(child, moniker, moniker, childFqn, fileId, symbols, edges);
+                walk(child, moniker, moniker, childFqn, fileId, sourceSet, symbols, edges);
             }
         }
     }
@@ -197,17 +208,21 @@ public final class Indexer {
 
     // ------------------------------------------------------------------ file discovery
 
-    private static List<Path> discover(List<Path> sourceRoots) throws IOException {
-        List<Path> files = new ArrayList<>();
-        for (Path root : sourceRoots) {
-            if (!Files.isDirectory(root)) {
+    /** A discovered {@code .java} file paired with its source root's {@link SourceSet} tag. */
+    private record TaggedFile(Path path, SourceSet set) {}
+
+    private static List<TaggedFile> discover(List<SourceRoot> sourceRoots) throws IOException {
+        List<TaggedFile> files = new ArrayList<>();
+        for (SourceRoot root : sourceRoots) {
+            if (!Files.isDirectory(root.dir())) {
                 continue;
             }
-            try (Stream<Path> walk = Files.walk(root)) {
-                walk.filter(p -> p.toString().endsWith(".java")).forEach(files::add);
+            try (Stream<Path> walk = Files.walk(root.dir())) {
+                walk.filter(p -> p.toString().endsWith(".java"))
+                        .forEach(p -> files.add(new TaggedFile(p, root.set())));
             }
         }
-        files.sort(Comparator.naturalOrder()); // deterministic in-run file ids
+        files.sort(Comparator.comparing(TaggedFile::path)); // deterministic in-run file ids
         return files;
     }
 

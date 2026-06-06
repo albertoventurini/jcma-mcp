@@ -3,6 +3,9 @@ package jcma.workspace;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import jcma.index.SourceRoot;
+import jcma.index.SourceSet;
+
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -65,5 +68,47 @@ class WorkspaceTest {
         List<Path> roots = Workspace.discoverSourceRoots(root);
         assertEquals(List.of(root.resolve("src/main/java")), roots,
                 "no <sourceDirectory> → Maven standard layout src/main/java");
+    }
+
+    // ---------------------------------------------------------------- source-set tagging
+
+    @Test
+    void discoverSourceSetsTagsTestSourceDirectory() {
+        Path root = FIXTURES.resolve("ws-testsrcdir");
+        List<SourceRoot> roots = Workspace.discoverSourceSets(root);
+        assertEquals(
+                List.of(new SourceRoot(root.resolve("java"), SourceSet.MAIN),
+                        new SourceRoot(root.resolve("javatest"), SourceSet.TEST)),
+                roots,
+                "<sourceDirectory> → MAIN, <testSourceDirectory> → TEST");
+    }
+
+    @Test
+    void discoverSourceSetsAddsDefaultTestRootWhenPresent() {
+        Path root = FIXTURES.resolve("ws-with-tests");
+        List<SourceRoot> roots = Workspace.discoverSourceSets(root);
+        assertEquals(
+                List.of(new SourceRoot(root.resolve("src/main/java"), SourceSet.MAIN),
+                        new SourceRoot(root.resolve("src/test/java"), SourceSet.TEST)),
+                roots,
+                "standard-layout pom with src/test/java present → main MAIN + test TEST");
+    }
+
+    @Test
+    void discoverSourceSetsUsesConventionWithoutBuildTool() {
+        Path root = FIXTURES.resolve("ws-gradle-like");
+        List<SourceRoot> roots = Workspace.discoverSourceSets(root);
+        assertEquals(
+                List.of(new SourceRoot(root.resolve("src/main/java"), SourceSet.MAIN),
+                        new SourceRoot(root.resolve("src/test/java"), SourceSet.TEST)),
+                roots,
+                "no pom but standard src/main|test/java present → tagged by convention");
+    }
+
+    @Test
+    void discoverSourceSetsEmptyForAdHocLayout() {
+        Path root = FIXTURES.resolve("ws-adhoc");
+        assertTrue(Workspace.discoverSourceSets(root).isEmpty(),
+                "no build model and no standard layout → nothing discovered (caller falls back)");
     }
 }

@@ -84,6 +84,23 @@ class IndexerTest {
     }
 
     @Test
+    void defaultOverloadTagsSymbolsMain() throws IOException {
+        FileIndex fi = indexer.indexFile(0, SHAPES.resolve("Circle.java"));
+        for (Symbol s : fi.symbols()) {
+            assertEquals(SourceSet.MAIN, s.sourceSet(), "indexFile(id,file) defaults to MAIN: " + s.moniker());
+        }
+    }
+
+    @Test
+    void taggedOverloadCarriesSourceSetOntoEverySymbol() throws IOException {
+        FileIndex fi = indexer.indexFile(0, SHAPES.resolve("Circle.java"), SourceSet.TEST);
+        assertTrue(fi.symbols().size() > 1, "fixture has several symbols");
+        for (Symbol s : fi.symbols()) {
+            assertEquals(SourceSet.TEST, s.sourceSet(), "TEST tag propagates to nested members: " + s.moniker());
+        }
+    }
+
+    @Test
     void symbolsCarryTheirDeclarationRange() throws IOException {
         FileIndex fi = indexer.indexFile(3, SHAPES.resolve("Circle.java"));
         Symbol circle = require(byMoniker(fi), PKG + "Circle#");

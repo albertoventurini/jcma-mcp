@@ -1,5 +1,8 @@
 package jcma.workspace;
 
+import jcma.index.SourceRoot;
+import jcma.index.SourceSet;
+
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -30,6 +33,10 @@ public final class Workspace {
     /** {@code <sourceDirectory>…</sourceDirectory>} (first occurrence; whitespace-tolerant). */
     private static final Pattern SOURCE_DIRECTORY =
             Pattern.compile("<sourceDirectory>\\s*(.*?)\\s*</sourceDirectory>", Pattern.DOTALL);
+
+    /** {@code <testSourceDirectory>…</testSourceDirectory>} (first occurrence; whitespace-tolerant). */
+    private static final Pattern TEST_SOURCE_DIRECTORY =
+            Pattern.compile("<testSourceDirectory>\\s*(.*?)\\s*</testSourceDirectory>", Pattern.DOTALL);
 
     /** The {@code package a.b.c;} declaration of a compilation unit (first occurrence). */
     private static final Pattern PACKAGE_DECL =
@@ -141,23 +148,62 @@ public final class Workspace {
         return List.copyOf(jars);
     }
 
-    /** Source roots for a project root: {@code <sourceDirectory>} from pom, else {@code src/main/java}. */
+    /** Source roots for a project root (untagged) — the {@link #discoverSourceSets} dirs in order. */
     public static List<Path> discoverSourceRoots(Path projectRoot) {
+        return discoverSourceSets(projectRoot).stream().map(SourceRoot::dir).toList();
+    }
+
+    /**
+     * Source roots <b>tagged</b> by {@link SourceSet} (PRD §5.1 test-source indexing). With a Maven
+     * {@code pom.xml}: {@code <sourceDirectory>} (default {@code src/main/java}) → {@code MAIN}, and
+     * {@code <testSourceDirectory>} → {@code TEST} (the {@code src/test/java} default is added only
+     * when it exists). Without a build file: the standard {@code src/main/java} / {@code src/test/java}
+     * dirs that exist, tagged by convention (covers standard Gradle too — build files aren't parsed).
+     * An ad-hoc tree with neither a pom nor the standard layout yields an empty list, leaving the
+     * caller to fall back (e.g. index the repo root as {@code MAIN}).
+     */
+    public static List<SourceRoot> discoverSourceSets(Path projectRoot) {
         Path pom = projectRoot.resolve("pom.xml");
         if (Files.isRegularFile(pom)) {
             try {
-                Matcher m = SOURCE_DIRECTORY.matcher(Files.readString(pom));
-                if (m.find()) {
-                    String dir = m.group(1).trim();
-                    if (!dir.isEmpty()) {
-                        return List.of(projectRoot.resolve(dir));
-                    }
+                String content = Files.readString(pom);
+                List<SourceRoot> roots = new ArrayList<>();
+                roots.add(new SourceRoot(
+                        projectRoot.resolve(group(SOURCE_DIRECTORY, content, "src/main/java")), SourceSet.MAIN));
+                String declaredTest = group(TEST_SOURCE_DIRECTORY, content, null);
+                if (declaredTest != null) {
+                    roots.add(new SourceRoot(projectRoot.resolve(declaredTest), SourceSet.TEST));
+                } else {
+                    addIfDir(roots, projectRoot.resolve("src/test/java"), SourceSet.TEST);
                 }
+                return roots;
             } catch (IOException ignore) {
-                // fall through to the standard layout
+                // fall through to convention-based discovery
             }
         }
-        return List.of(projectRoot.resolve("src/main/java"));
+        List<SourceRoot> roots = new ArrayList<>();
+        addIfDir(roots, projectRoot.resolve("src/main/java"), SourceSet.MAIN);
+        addIfDir(roots, projectRoot.resolve("src/test/java"), SourceSet.TEST);
+        return roots;
+    }
+
+    /** The trimmed first capture of {@code p} in {@code content}, or {@code dflt} if absent/blank. */
+    private static String group(Pattern p, String content, String dflt) {
+        Matcher m = p.matcher(content);
+        if (m.find()) {
+            String v = m.group(1).trim();
+            if (!v.isEmpty()) {
+                return v;
+            }
+        }
+        return dflt;
+    }
+
+    /** Append {@code SourceRoot(dir, set)} iff {@code dir} is an existing directory. */
+    private static void addIfDir(List<SourceRoot> roots, Path dir, SourceSet set) {
+        if (Files.isDirectory(dir)) {
+            roots.add(new SourceRoot(dir, set));
+        }
     }
 
     /**

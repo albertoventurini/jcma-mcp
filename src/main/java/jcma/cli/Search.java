@@ -44,8 +44,8 @@ final class Search {
             out.println("search \"" + query + "\": " + ids.size() + " match(es)  (" + triSeg + ")");
             for (int id : ids) {
                 Symbol s = store.symbol(id);
-                out.printf("#%-5d %-12s %-48s %-20s %s%s%n",
-                        id, s.kind(), s.moniker(), s.name(), site(s),
+                out.printf("#%-5d %-12s %-4s %-48s %-20s %s%s%n",
+                        id, s.kind(), s.sourceSet(), s.moniker(), s.name(), site(s),
                         s.signature() == null ? "" : "  " + s.signature());
             }
             return 0;

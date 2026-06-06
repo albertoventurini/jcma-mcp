@@ -3,6 +3,8 @@ package jcma.cli;
 import jcma.index.CompactionPolicy;
 import jcma.index.Indexer;
 import jcma.index.LsmStore;
+import jcma.index.SourceRoot;
+import jcma.index.SourceSet;
 import jcma.obs.Metrics;
 import jcma.obs.Timer;
 import jcma.workspace.Workspace;
@@ -35,15 +37,15 @@ final class Index {
         }
         Path indexDir = args.length == 3 ? Path.of(args[2]) : repo.resolve(".jcma");
 
-        // Source roots from the workspace (Maven/standard layout); fall back to the repo itself.
-        List<Path> roots = new ArrayList<>();
-        for (Path root : Workspace.discoverSourceRoots(repo)) {
-            if (Files.isDirectory(root)) {
+        // Tagged source roots (main + test) from the workspace; fall back to the repo itself as MAIN.
+        List<SourceRoot> roots = new ArrayList<>();
+        for (SourceRoot root : Workspace.discoverSourceSets(repo)) {
+            if (Files.isDirectory(root.dir())) {
                 roots.add(root);
             }
         }
         if (roots.isEmpty()) {
-            roots.add(repo);
+            roots.add(new SourceRoot(repo, SourceSet.MAIN));
         }
 
         try {

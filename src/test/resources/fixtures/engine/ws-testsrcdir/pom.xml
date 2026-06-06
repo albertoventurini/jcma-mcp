@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Workspace fixture: a pom overriding both the main and test source directories (to java and
+     javatest). WorkspaceTest.discoverSourceSets asserts the main dir is MAIN and the test dir TEST. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>jcma.fixture</groupId>
+  <artifactId>ws-testsrcdir</artifactId>
+  <version>0.0.1</version>
+  <build>
+    <sourceDirectory>java</sourceDirectory>
+    <testSourceDirectory>javatest</testSourceDirectory>
+  </build>
+</project>

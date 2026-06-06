@@ -72,7 +72,14 @@ listed under Open Questions.
   least need. Deferred to an optional future javac/HotSpot "precision mode."
 - **No human-editor ergonomics:** formatting, rename refactoring UI, code lenses, inlay hints,
   semantic-token coloring, as-you-type completion, signature help, document highlights.
-- **No Gradle / BSP** classpath integration in the MVP (deferred).
+- **No Gradle / BSP** classpath integration in the MVP (deferred). Specifically: no parsing of
+  `build.gradle(.kts)` / no build-server protocol. Standard Gradle layouts are still indexed — both
+  `src/main/java` and `src/test/java` are discovered **by convention** (see below), so a Gradle
+  project's sources and tests are covered without reading its build files.
+- *Indexing scope clarification (not a non-goal):* **test sources are indexed**, tagged
+  `SourceSet.TEST`. Discovery uses the Maven `<sourceDirectory>`/`<testSourceDirectory>` and the
+  standard `src/main/java`/`src/test/java` convention; an ad-hoc tree (no build model, no standard
+  layout) is indexed at the repo root as `MAIN`.
 
 ---
 

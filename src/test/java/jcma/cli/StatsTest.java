@@ -11,6 +11,8 @@ import java.util.List;
 import jcma.index.CompactionPolicy;
 import jcma.index.Indexer;
 import jcma.index.LsmStore;
+import jcma.index.SourceRoot;
+import jcma.index.SourceSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -35,7 +37,8 @@ class StatsTest {
     @Test
     void reportsBaseAndOverlayState(@TempDir Path dir) throws Exception {
         try (LsmStore store = LsmStore.open(dir, CompactionPolicy.manual())) {
-            new Indexer().indexRepo(List.of(Path.of("src/test/resources/fixtures/indexer")), store);
+            new Indexer().indexRepo(
+                    List.of(new SourceRoot(Path.of("src/test/resources/fixtures/indexer"), SourceSet.MAIN)), store);
         }
         Run r = dispatch("stats", dir.toString());
         assertEquals(0, r.exit(), "stats should exit 0: " + r.out() + r.err());

@@ -19,6 +19,9 @@ Write failing tests + fixtures → **STOP for review** → implement → verify.
 - `src/main/java/jcma/workspace/Workspace.java` — source-root discovery; **Maven `pom.xml`
   parsing** for source dirs; **manual classpath file** (`cp.txt`, `File.pathSeparator`-split);
   classpath auto-detect via `mvn dependency:build-classpath` (invoked/loaded here).
+  *(Later extended — see PRD §3 indexing-scope note: discovery covers **both main and test**
+  source roots — Maven `<sourceDirectory>`/`<testSourceDirectory>` + the `src/main|test/java`
+  convention — returning them tagged via `discoverSourceSets` → `jcma.index.SourceRoot`.)*
 - `src/main/java/jcma/cli/` — wire a `resolve <file> <line:col>` subcommand.
 
 ## Tests (red-first)

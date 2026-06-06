@@ -26,7 +26,8 @@ class IndexRepoTest {
     @Test
     void indexesAControlledPackageThroughTheStore(@TempDir Path dir) throws IOException {
         try (LsmStore store = LsmStore.open(dir, CompactionPolicy.manual())) {
-            Indexer.IndexStats stats = new Indexer().indexRepo(List.of(SHAPES_ROOT), store);
+            Indexer.IndexStats stats =
+                    new Indexer().indexRepo(List.of(new SourceRoot(SHAPES_ROOT, SourceSet.MAIN)), store);
 
             assertEquals(4, stats.files(), "Shape, Circle, Day, Point");
             assertTrue(stats.symbols() >= 12, "symbols across the 4 files: " + stats.symbols());
@@ -48,7 +49,8 @@ class IndexRepoTest {
     @Test
     void indexesCommonsLangSliceForScale(@TempDir Path dir) throws IOException {
         try (LsmStore store = LsmStore.open(dir, CompactionPolicy.manual())) {
-            Indexer.IndexStats stats = new Indexer().indexRepo(List.of(COMMONS_SLICE), store);
+            Indexer.IndexStats stats =
+                    new Indexer().indexRepo(List.of(new SourceRoot(COMMONS_SLICE, SourceSet.MAIN)), store);
 
             assertTrue(stats.files() >= 2, "the slice has at least AnnotationUtils + ToStringStyle");
             assertTrue(stats.symbols() >= 30, "real classes carry many members: " + stats.symbols());

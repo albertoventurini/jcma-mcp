@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Workspace fixture: a standard-layout pom with BOTH src/main/java and src/test/java present.
+     WorkspaceTest asserts the default test root is discovered + tagged TEST when it exists, and
+     IndexCommandTest indexes it to check main/test symbols are tagged and shown by `search`. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>jcma.fixture</groupId>
+  <artifactId>ws-with-tests</artifactId>
+  <version>0.0.1</version>
+</project>

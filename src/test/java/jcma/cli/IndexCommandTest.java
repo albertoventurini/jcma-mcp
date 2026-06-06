@@ -19,6 +19,7 @@ import org.junit.jupiter.api.io.TempDir;
 class IndexCommandTest {
 
     private static final Path REPO = Path.of("src/test/resources/fixtures/indexer");
+    private static final Path ENGINE = Path.of("src/test/resources/fixtures/engine");
 
     private record Run(int exit, String out, String err) {}
 
@@ -55,6 +56,32 @@ class IndexCommandTest {
         Run idx = dispatch("index", repoCopy.toString());
         assertEquals(0, idx.exit(), idx.err());
         assertTrue(Files.isDirectory(repoCopy.resolve(".jcma")), "default index dir <repo>/.jcma created");
+    }
+
+    @Test
+    void indexesTestSourcesAndTagsThem(@TempDir Path indexDir) {
+        // ws-with-tests has src/main/java/com/example/Greeter.java + src/test/java/.../GreeterTest.java.
+        Run idx = dispatch("index", ENGINE.resolve("ws-with-tests").toString(), indexDir.toString());
+        assertEquals(0, idx.exit(), "index should exit 0: " + idx.out() + idx.err());
+
+        Run search = dispatch("search", indexDir.toString(), "Greeter");
+        assertEquals(0, search.exit(), search.err());
+        assertTrue(search.out().contains("GreeterTest"),
+                "test sources are indexed (GreeterTest found): " + search.out());
+        assertTrue(search.out().contains("MAIN"), "the prod class is tagged MAIN: " + search.out());
+        assertTrue(search.out().contains("TEST"), "the test class is tagged TEST: " + search.out());
+    }
+
+    @Test
+    void adHocLayoutFallsBackToAllMain(@TempDir Path indexDir) {
+        // ws-adhoc has a loose Loose.java with no pom and no standard layout → repo-root, all MAIN.
+        Run idx = dispatch("index", ENGINE.resolve("ws-adhoc").toString(), indexDir.toString());
+        assertEquals(0, idx.exit(), "index should exit 0: " + idx.out() + idx.err());
+
+        Run search = dispatch("search", indexDir.toString(), "Loose");
+        assertEquals(0, search.exit(), search.err());
+        assertTrue(search.out().contains("Loose"), "the loose class is indexed: " + search.out());
+        assertTrue(search.out().contains("MAIN"), "ad-hoc sources are tagged MAIN: " + search.out());
     }
 
     @Test

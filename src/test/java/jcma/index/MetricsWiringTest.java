@@ -25,7 +25,7 @@ class MetricsWiringTest {
     void indexRecordsCoarseThroughputMetrics(@TempDir Path dir) throws IOException {
         Metrics m = Metrics.create();
         try (LsmStore store = LsmStore.open(dir, CompactionPolicy.manual(), m)) {
-            Indexer.IndexStats stats = new Indexer(m).indexRepo(List.of(SHAPES_ROOT), store);
+            Indexer.IndexStats stats = new Indexer(m).indexRepo(List.of(new SourceRoot(SHAPES_ROOT, SourceSet.MAIN)), store);
 
             assertEquals(4, m.counter("index.files").sum());
             assertEquals(stats.symbols(), m.counter("index.symbols").sum());
@@ -60,7 +60,7 @@ class MetricsWiringTest {
     void noopMetricsLeaveTheRegistryEmpty(@TempDir Path dir) throws IOException {
         Metrics m = Metrics.noop();
         try (LsmStore store = LsmStore.open(dir, CompactionPolicy.manual(), m)) {
-            new Indexer(m).indexRepo(List.of(SHAPES_ROOT), store);
+            new Indexer(m).indexRepo(List.of(new SourceRoot(SHAPES_ROOT, SourceSet.MAIN)), store);
             assertTrue(m.counterValues().isEmpty(), "no-op records nothing");
             assertTrue(m.timerValues().isEmpty());
         }
@@ -82,7 +82,7 @@ class MetricsWiringTest {
             Path dir = Files.createTempDirectory("jcma-overhead");
             long t0 = System.nanoTime();
             try (LsmStore store = LsmStore.open(dir, CompactionPolicy.manual(), m)) {
-                new Indexer(m).indexRepo(List.of(SHAPES_ROOT), store);
+                new Indexer(m).indexRepo(List.of(new SourceRoot(SHAPES_ROOT, SourceSet.MAIN)), store);
             }
             best = Math.min(best, System.nanoTime() - t0);
         }

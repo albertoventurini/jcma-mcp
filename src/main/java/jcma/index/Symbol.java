@@ -12,7 +12,8 @@ package jcma.index;
  *
  * @param moniker          stable structured identity (see {@link Moniker}); never {@code null}
  * @param kind             symbol kind ({@link SymbolKind})
- * @param flags            packed modifier bitset (jcma-owned; opaque to the store)
+ * @param flags            packed jcma-owned bitset, opaque to the store; bit 0 is the {@link
+ *                         SourceSet} (see {@link #sourceSet()}), bits 1+ reserved
  * @param enclosingMoniker moniker of the containing symbol, or {@code null} if top-level
  * @param fileId           declaring file id, or {@code -1} for a phantom/external symbol
  * @param range            declaration range, or {@link Range#NONE} if external/unknown
@@ -44,5 +45,10 @@ public record Symbol(
     /** A phantom symbol = declared nowhere we parse ({@code fileId == -1}); see PRD §5.1 dangling refs. */
     public boolean isPhantom() {
         return fileId == -1;
+    }
+
+    /** The source set this symbol's file belongs to ({@link SourceSet#MAIN} unless {@code flags} bit 0 is set). */
+    public SourceSet sourceSet() {
+        return SourceSet.of(flags);
     }
 }
