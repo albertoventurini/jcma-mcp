@@ -67,6 +67,12 @@ public final class Main {
             case "outline" -> {
                 return Outline.run(args, out, err);
             }
+            case "refs" -> {
+                return Refs.run(args, out, err);
+            }
+            case "def" -> {
+                return Def.run(args, out, err);
+            }
             default -> {
                 err.println("jcma: unknown subcommand '" + cmd + "'");
                 usage(err);
@@ -160,6 +166,11 @@ public final class Main {
                                        reports files / symbols / LOC-per-second
                   compact <indexDir>   fold the overlay into a fresh base
                   outline <file>       print a file's declaration containment tree
+                  refs <repo> <symbol>
+                                       find references (Tier-2 resolve-on-demand), grouped by
+                                       enclosing symbol, with counts + the unconfirmed tail
+                  def <repo> <symbol>  |  def <repo> <file> <line:col>
+                                       find a definition by symbol name or by use-site position
                 """);
     }
 }

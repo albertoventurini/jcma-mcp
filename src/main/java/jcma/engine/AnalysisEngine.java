@@ -1,6 +1,7 @@
 package jcma.engine;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -27,4 +28,13 @@ public interface AnalysisEngine {
 
     /** Resolve the type reference enclosing {@code pos}; empty if none or unresolvable. */
     Optional<ResolvedType> resolveType(ParsedUnit unit, Position pos);
+
+    /**
+     * Resolve <em>every</em> use-site in {@code unit} (the seven occurrence categories) — the Tier-2
+     * lazy-resolve unit (PRD §5.1). Each resolution is guarded (incl. {@code StackOverflowError});
+     * a use-site that resolves carries a {@link ResolvedTarget}, one that does not carries a
+     * safe-degrading {@link ResolveFailure} — never a guessed answer. The list is the input to the
+     * resolved-edge cache + the unconfirmed tail.
+     */
+    List<ResolvedOccurrence> resolveOccurrences(ParsedUnit unit);
 }

@@ -233,6 +233,29 @@ public final class LsmStore implements AutoCloseable {
         return out;
     }
 
+    /**
+     * The live declaration set — base symbols whose file is not overlaid, unioned with the overlay's
+     * symbols (overlay wins on moniker). Phantoms ({@code fileId < 0}) are excluded. Tier-2 uses it to
+     * map a resolved declaration's {@code file:line} back to its graph moniker.
+     */
+    public List<Symbol> liveSymbols() {
+        Map<String, Symbol> byMoniker = new HashMap<>();
+        if (baseSym != null) {
+            for (int id = 0; id < baseSym.size(); id++) {
+                Symbol s = baseSym.symbol(id);
+                if (s.fileId() >= 0 && !edited.containsKey(s.fileId())) {
+                    byMoniker.put(s.moniker(), s);
+                }
+            }
+        }
+        for (Symbol s : ovSymbols.values()) {
+            if (s.fileId() >= 0) {
+                byMoniker.put(s.moniker(), s);
+            }
+        }
+        return new ArrayList<>(byMoniker.values());
+    }
+
     /** Number of files currently held in the overlay (edited or tombstoned since the last compaction). */
     public int overlayFileCount() {
         return edited.size();

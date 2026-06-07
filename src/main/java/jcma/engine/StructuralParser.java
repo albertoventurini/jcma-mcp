@@ -52,17 +52,56 @@ public final class StructuralParser {
 
     /** Parse {@code file} (parse-only) and extract its package + top-level declarations as a tree. */
     public FileOutline outline(Path file) throws IOException {
+        return collect(file).outline();
+    }
+
+    /**
+     * Parse {@code file} (parse-only) and enumerate its use-sites (the seven occurrence categories) —
+     * the input to the usage-name index ({@code usage-names.seg}). No resolution: each site carries
+     * only its syntactic target name + range, which is all the {@code find_references} candidate prune
+     * needs. Mirrors {@link #outline} so a cold-index pass gets declarations + usages from one parse.
+     */
+    public List<UsageSite> usages(Path file) throws IOException {
+        return collect(file).usages();
+    }
+
+    /** Parse {@code file} once and expose both projections (declarations + usages). */
+    public Parsed collect(Path file) throws IOException {
         // A fresh JavaParser per call: JavaParser instances are not thread-safe, and indexRepo
         // parses across virtual threads. The shared config is read-only, so sharing it is fine.
         ParseResult<CompilationUnit> result = new JavaParser(config).parse(file);
         CompilationUnit cu = result.getResult().orElseThrow(
                 () -> new IOException("parse failed: " + file + " — " + result.getProblems()));
-        String packageName = cu.getPackageDeclaration().map(p -> p.getNameAsString()).orElse("");
-        List<Outline> types = new ArrayList<>();
-        for (TypeDeclaration<?> td : cu.getTypes()) {
-            types.add(outlineOf(td));
+        return new Parsed(cu);
+    }
+
+    /** One parsed file, offering the declaration outline and the use-site enumeration off a single parse. */
+    public final class Parsed {
+        private final CompilationUnit cu;
+
+        private Parsed(CompilationUnit cu) {
+            this.cu = cu;
         }
-        return new FileOutline(packageName, types);
+
+        /** The package + top-level declarations as a tree. */
+        public FileOutline outline() {
+            String packageName = cu.getPackageDeclaration().map(p -> p.getNameAsString()).orElse("");
+            List<Outline> types = new ArrayList<>();
+            for (TypeDeclaration<?> td : cu.getTypes()) {
+                types.add(outlineOf(td));
+            }
+            return new FileOutline(packageName, types);
+        }
+
+        /** The file's use-sites (the seven occurrence categories). */
+        public List<UsageSite> usages() {
+            List<UsageSite> out = new ArrayList<>();
+            for (Occurrences.Occ o : Occurrences.scan(cu)) {
+                out.add(new UsageSite(o.kind(), o.targetName(),
+                        o.startLine(), o.startCol(), o.endLine(), o.endCol()));
+            }
+            return out;
+        }
     }
 
     /** A type declaration → an {@link Outline} with its members (and record components) as children. */

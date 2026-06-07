@@ -6,11 +6,23 @@ import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ParserConfiguration.LanguageLevel;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
+import com.github.javaparser.ast.body.RecordDeclaration;
+import com.github.javaparser.ast.body.VariableDeclarator;
+import com.github.javaparser.ast.expr.AnnotationExpr;
+import com.github.javaparser.ast.expr.FieldAccessExpr;
+import com.github.javaparser.ast.expr.InstanceOfExpr;
+import com.github.javaparser.ast.expr.LambdaExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.MethodReferenceExpr;
+import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
+import com.github.javaparser.ast.nodeTypes.NodeWithTypeArguments;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.resolution.declarations.AssociableToAST;
+import com.github.javaparser.resolution.declarations.ResolvedConstructorDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedMethodLikeDeclaration;
+import com.github.javaparser.resolution.declarations.ResolvedTypeDeclaration;
+import com.github.javaparser.resolution.declarations.ResolvedValueDeclaration;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JarTypeSolver;
@@ -22,6 +34,8 @@ import jcma.workspace.Workspace;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -129,6 +143,131 @@ public final class JavaParserEngine implements AnalysisEngine {
         } catch (Throwable t) {
             if (DEBUG) t.printStackTrace();
             return Optional.empty();
+        }
+    }
+
+    @Override
+    public List<ResolvedOccurrence> resolveOccurrences(ParsedUnit unit) {
+        List<ResolvedOccurrence> out = new ArrayList<>();
+        for (Occurrences.Occ o : Occurrences.scan(unit.cu())) {
+            out.add(attempt(o));
+        }
+        return out;
+    }
+
+    /** Resolve one enumerated use-site; never throws (guards {@code Throwable}, incl. StackOverflow). */
+    private ResolvedOccurrence attempt(Occurrences.Occ o) {
+        try {
+            Object resolved = switch (o.kind()) {
+                case CALL          -> ((MethodCallExpr) o.node()).resolve();
+                case INSTANTIATION -> ((ObjectCreationExpr) o.node()).resolve();
+                case NAME          -> ((NameExpr) o.node()).resolve();
+                case FIELD_ACCESS  -> ((FieldAccessExpr) o.node()).resolve();
+                case METHOD_REF    -> ((MethodReferenceExpr) o.node()).resolve();
+                case TYPE_REF      -> ((ClassOrInterfaceType) o.node()).resolve();
+                case ANNOTATION    -> ((AnnotationExpr) o.node()).resolve();
+            };
+            ResolvedTarget target = describe(resolved);
+            return new ResolvedOccurrence(o.kind(), o.targetName(),
+                    o.startLine(), o.startCol(), o.endLine(), o.endCol(), target, null);
+        } catch (Throwable t) {
+            if (DEBUG) {
+                t.printStackTrace();
+            }
+            return new ResolvedOccurrence(o.kind(), o.targetName(),
+                    o.startLine(), o.startCol(), o.endLine(), o.endCol(), null, failureOf(o.node(), t));
+        }
+    }
+
+    /** A resolved declaration → engine-neutral {@link ResolvedTarget} (fqn/signature/site/kind). */
+    private ResolvedTarget describe(Object r) {
+        Loc loc = locate(r);
+        if (r instanceof ResolvedMethodLikeDeclaration m) {
+            DeclKind kind = m instanceof ResolvedConstructorDeclaration ? DeclKind.CONSTRUCTOR : DeclKind.METHOD;
+            return new ResolvedTarget(safe(m::getQualifiedName), safe(m::getQualifiedSignature),
+                    loc.file(), loc.line(), kind);
+        }
+        if (r instanceof ResolvedTypeDeclaration t) {
+            String fqn = safe(t::getQualifiedName);
+            return new ResolvedTarget(fqn, fqn, loc.file(), loc.line(), typeKind(t));
+        }
+        if (r instanceof ResolvedValueDeclaration v) {
+            String type = safe(() -> v.getType().describe());
+            return new ResolvedTarget(v.getName(), type + " " + v.getName(), loc.file(), loc.line(), DeclKind.FIELD);
+        }
+        if (r instanceof com.github.javaparser.resolution.types.ResolvedType rt) {
+            String desc = safe(rt::describe);
+            DeclKind kind = rt.isReferenceType()
+                    ? rt.asReferenceType().getTypeDeclaration().map(JavaParserEngine::typeKind).orElse(DeclKind.OTHER)
+                    : DeclKind.OTHER;
+            return new ResolvedTarget(desc, desc, loc.file(), loc.line(), kind);
+        }
+        String s = String.valueOf(r);
+        return new ResolvedTarget(s, s, loc.file(), loc.line(), DeclKind.OTHER);
+    }
+
+    private static DeclKind typeKind(ResolvedTypeDeclaration t) {
+        try {
+            if (t.isInterface()) {
+                return DeclKind.INTERFACE;
+            }
+            if (t.isEnum()) {
+                return DeclKind.ENUM;
+            }
+            if (t.isAnnotation()) {
+                return DeclKind.ANNOTATION;
+            }
+            return DeclKind.CLASS;
+        } catch (Throwable ignore) {
+            return DeclKind.OTHER;
+        }
+    }
+
+    /** Neutral facts for a safe-degrading miss (the node-inspecting half of the M0 FailureClassifier). */
+    private static ResolveFailure failureOf(Node node, Throwable t) {
+        String msg = t.getMessage() == null ? "" : t.getMessage().replaceAll("\\s+", " ").trim();
+        return new ResolveFailure(t.getClass().getSimpleName(), msg, t instanceof StackOverflowError,
+                involvesLambdaOrMethodRef(node), inPatternRecordSealed(node),
+                involvesVar(node), hasTypeArguments(node));
+    }
+
+    private static boolean involvesLambdaOrMethodRef(Node node) {
+        if (node instanceof MethodReferenceExpr) {
+            return true;
+        }
+        if (node.findAncestor(LambdaExpr.class).isPresent()
+                || node.findAncestor(MethodReferenceExpr.class).isPresent()) {
+            return true;
+        }
+        if (node instanceof MethodCallExpr mce) {
+            return mce.getArguments().stream()
+                    .anyMatch(a -> a instanceof LambdaExpr || a instanceof MethodReferenceExpr);
+        }
+        return false;
+    }
+
+    private static boolean inPatternRecordSealed(Node node) {
+        if (node.findAncestor(com.github.javaparser.ast.expr.PatternExpr.class).isPresent()
+                || node.findAncestor(RecordDeclaration.class).isPresent()) {
+            return true;
+        }
+        return node.findAncestor(InstanceOfExpr.class).map(io -> io.getPattern().isPresent()).orElse(false);
+    }
+
+    private static boolean involvesVar(Node node) {
+        return node.findAncestor(VariableDeclarator.class).map(vd -> vd.getType().isVarType()).orElse(false);
+    }
+
+    private static boolean hasTypeArguments(Node node) {
+        return node instanceof NodeWithTypeArguments<?> nwta
+                && nwta.getTypeArguments().isPresent() && !nwta.getTypeArguments().get().isEmpty();
+    }
+
+    private static String safe(java.util.function.Supplier<String> s) {
+        try {
+            return s.get();
+        } catch (Throwable t) {
+            return "?";
         }
     }
 

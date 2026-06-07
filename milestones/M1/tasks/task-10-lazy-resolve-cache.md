@@ -37,4 +37,33 @@ Write failing tests + fixtures → **STOP for review** → implement → verify.
 
 ## Done when
 - tests green · native green · §Targets find-refs recall/0-silent-wrong + unconfirmed-tail enforced.
+
+## Built — decisions & deltas (2026-06-07)
+Implemented graph-native (not an in-memory side cache), per the design discussion. Key decisions:
+- **A reference is an edge, not a node.** Nodes stay = declarations (`symbols.seg`); a resolved
+  reference is an `edges.seg` edge `enclosing-decl —CALLS/REFERENCES/…→ target-decl`, with the
+  use-site as the edge's `Occurrence`. `find_references` = `LsmStore.rev(target)` grouped by
+  `edge.src`, minus the structural `CONTAINS` edge. So the **second query is a pure graph walk**.
+- **Prune via a `usage-names.seg`** — a *second `TrigramIndex` instance* over use-site target-names
+  (`UsageNameIndexer`, built in the cold-index `Reconciler` pass), read via `candidateFiles(name)`.
+  Same format as the declaration index; the two never mix (search vs prune stay separate). Occurrences
+  are **not** persisted as records — resolution needs the live AST, so candidate files are re-parsed
+  on first touch; only `name → fileId` persists.
+- **Moniker bridge:** a resolved decl's `file:line` → its Tier-1 symbol moniker (via `FileTable` +
+  an at-open `(fileId,line)→moniker` map); jar/JDK targets → a phantom moniker keyed by signature,
+  minted with the resolved `DeclKind`.
+- **Edge write-back:** resolving a file re-emits its Tier-1 `FileIndex` (symbols + `CONTAINS`) plus
+  the new resolved edges through `applyEdit` (idempotent — full edge set per file). No auto-compaction
+  (manual policy in Tier-2).
+- **Scope was larger than `resolve/`+`cli/`:** also touched `engine/` (the 7-category occurrence
+  scanner + `resolveOccurrences` on the `AnalysisEngine` seam, `StructuralParser.usages`) and
+  `index/`+`workspace/` (usage-name index build). `FailureClassifier` split: the engine surfaces a
+  neutral `ResolveFailure` (throwable + context flags), `resolve/FailureClassifier` maps it to a
+  `Cause` (keeps JavaParser behind the §4 seam). All 7 categories resolved; `find_definition`
+  supports both PRD §6 modes.
+- **CLI:** `jcma refs <repo> <symbol>` and `jcma def <repo> <symbol>|<file> <line:col>` (the index is
+  `<repo>/.jcma`).
+- **Deferred to task-11:** incremental usage-index maintenance (currently a full rebuild on any
+  reconcile change); cross-restart re-resolve avoidance (the warm-set is in-session) folds into
+  validate-on-read. **Not done:** the `trigrams.seg → symbol-names.seg` rename (kept `trigrams.seg`).
 </content>

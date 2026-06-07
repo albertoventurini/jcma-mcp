@@ -5,12 +5,14 @@ import jcma.index.Indexer;
 import jcma.index.LsmStore;
 import jcma.index.SourceRoot;
 import jcma.index.SourceSet;
+import jcma.index.UsageNameIndexer;
 import jcma.obs.Metrics;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -149,6 +151,16 @@ public final class Reconciler {
         // 5. Fold edits into a fresh base only if there were any; persist the table if it changed.
         if (added + changed + deleted > 0) {
             store.compact();
+            // Rebuild the usage-name index (find_references prune) from the current file set. A full
+            // rebuild is correct; task-11 makes it incremental. Ids come from the just-updated table.
+            Map<Integer, Path> filesById = new HashMap<>();
+            for (Map.Entry<Path, Current> e : current.entrySet()) {
+                FileTable.Entry te = table.get(e.getKey());
+                if (te != null) {
+                    filesById.put(te.fileId(), e.getValue().absolute());
+                }
+            }
+            UsageNameIndexer.build(indexDir, filesById);
         }
         if (tableDirty) {
             table.save(indexDir);
