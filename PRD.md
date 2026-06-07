@@ -132,7 +132,8 @@ future javac-backed precision mode.
                     │   └─ JavaParser + JavaSymbolSolver    │   ← swappable; javac-hybrid = fallback
                     ├──────────────────────────────────────┤
                     │  Index  (custom mmap store, §5.1)     │
-                    │   • trigram name index   (mmap)       │
+                    │   • declaration trigram + usage        │
+                    │     exact-match name indexes  (mmap)  │
                     │   • symbol columns + CSR graph (mmap) │   ← edges stored both directions
                     │   • immutable base + overlay (LSM)    │   ← incremental, bg-compacted
                     │   • per-file fingerprint sz/mtime/hash│
@@ -184,7 +185,8 @@ A segmented file mmap'd through `java.lang.foreign` (`Arena.ofShared()` + `FileC
 ```
 header · string arena (dedup UTF-8) · symbol columns · file table ·
 fwd adjacency (CSR) · rev adjacency (CSR) · occurrences (per-file slices) ·
-resolution state (per-occurrence: unresolved|resolved|stale) · trigram name index
+resolution state (per-occurrence: unresolved|resolved|stale) ·
+declaration trigram name index · usage exact-match name index
 ```
 **CSR (compressed sparse row)** = one `offset[symbolId]` array + a flat `targets[]` array:
 compact, cache-friendly traversal. **Memory payoff:** only small bounded caches sit in the Java
@@ -201,9 +203,9 @@ populates F's outgoing edges *and* contributes incoming edges to every declarati
 
 - **Index time:** parse-only — records *unresolved* occurrences (use-site + syntactic target
   name + lexical context). No SymbolSolver.
-- **First `find_references(X)`:** use the **trigram index to prune to candidates** = only
-  files whose text contains X's simple name (a small fraction of the repo, *not* the whole
-  project); resolve those candidates (bounded pool, cancellable); cache forward+reverse edges.
+- **First `find_references(X)`:** use the **usage exact-match index to prune to candidates** =
+  only files containing a use of X's exact simple name (a small fraction of the repo, *not* the
+  whole project); resolve those candidates (bounded pool, cancellable); cache forward+reverse edges.
   Paid once; resolving those files also warms reverse edges for every other symbol they touch.
   Later queries in that neighborhood are pure lookups.
 - *(Optional)* an instant **"candidate references"** answer (syntactic name-match, unresolved)
@@ -408,13 +410,26 @@ java-lsp/                      (consider renaming, e.g. jcma/)
   rests on freshness/validate-on-read (§5.1, Task-08) re-indexing against the actual files, never on
   the log surviving; a lost or torn log only costs re-parsing, never a wrong answer. `fsync` is
   reserved for compaction's atomic base swap. Also swappable (→ fsync-per-edit) if data ever
-  demands. **Trigram index — *decided (M1 Task-05)*:** mmap'd
-  (not heap-resident), consistent with the symbol/CSR segments so the heap stays bounded and RSS
-  scales with the trigrams a query touches; **case-sensitive** matching (an agent queries exact
-  identifiers and find-refs name-pruning is case-sensitive Java); ranking is exact → prefix →
-  mid-substring, tie-broken by name length, then lexicographic, then id; queries shorter than a
-  trigram fall back to verify-against-all. A case-insensitive variant stays additive (a second
-  case-folded posting set under a bumped segment version). Implemented in `jcma.index.TrigramIndex`.
+  demands. **Name indexes — two purpose-built formats (*split M1, 2026-06-07*):** the original plan
+  reused one trigram format for both name lookups; that clause of `graph-native-index-design` was
+  **dropped** (graph-native kept; format-reuse dropped) once the two consumers' requirements diverged.
+  - **Declaration trigram index (`trigrams.seg`, `jcma.index.TrigramIndex`)** — the `search` surface:
+    **substring** match over declaration names → **`symbolId`**. mmap'd (not heap-resident), consistent
+    with the symbol/CSR segments so the heap stays bounded and RSS scales with the trigrams a query
+    touches; **case-sensitive** (an agent queries exact identifiers); ranking exact → prefix →
+    mid-substring, tie-broken by name length, then lexicographic, then id; queries shorter than a
+    trigram fall back to verify-against-all. A case-insensitive variant stays additive (a second
+    case-folded posting set under a bumped segment version). *No `fileId` column* (it was derivable
+    from the node and only the usage path read it).
+  - **Usage exact-match index (`usage-names.seg`, `jcma.index.UsageNameIndex`)** — the
+    `find_references` candidate-file prune: **exact** simple name → **sorted distinct `fileId`s**. An
+    mmap'd inverted index (name dictionary, binary-searched; plain `int32` posting slices). Exact match
+    is both tighter pruning (fewer wasted resolves) and correct: every true use-site records the exact
+    simple name, and substring only ever *over*-matched. **Why split:** on this repo's own index the
+    shared trigram form was 60% trigram machinery the exact path never touches plus a 12% all-`-1` dead
+    `symbolId` column; use-site rows dedup 3.5× → the purpose-built form is **494 KB → ~43 KB (11.5×
+    smaller)**. (Delta+varint postings would save a further ~2%; rejected for v1 as not worth the
+    variable-width-decode complexity.)
   - **Moniker scheme:** *decided (M1 Task-03)* — SCIP-style structured string, built bottom-up so
     descriptors compose by concatenation (each self-terminates): package `com.acme.foo` →
     `com/acme/foo/` (dots→`/`, trailing `/`; default package → empty); type → `…Bar#` (nested:

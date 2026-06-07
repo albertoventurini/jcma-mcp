@@ -49,6 +49,7 @@ final class SelfTest {
         ok &= cap(out, "mmap", SelfTest::capMmap);
         ok &= cap(out, "store", SelfTest::capStore);
         ok &= cap(out, "trigram", SelfTest::capTrigram);
+        ok &= cap(out, "usage", SelfTest::capUsage);
         out.println(ok ? "ALL PASS" : "SOME FAIL");
         return ok ? 0 : 1;
     }
@@ -97,24 +98,48 @@ final class SelfTest {
     /**
      * Capability: round-trip a {@link jcma.index.TrigramIndex} through the real FFM write/read path
      * and run a substring query — proves the task-05 mmap'd trigram postings + binary-searched
-     * trigram keys survive native-image (the §5.1 name-search read path).
+     * trigram keys survive native-image (the §5.1 declaration name-search read path).
      */
     static void capTrigram() throws Exception {
         Path dir = Files.createTempDirectory("jcma-selftest-trigram");
         Path seg = dir.resolve(jcma.index.TrigramIndex.FILE_NAME);
         try {
             jcma.index.TrigramIndex.write(seg, List.of(
-                    new jcma.index.TrigramIndex.Entry("Greeter", 0, 0),
-                    new jcma.index.TrigramIndex.Entry("greet", 1, 0),
-                    new jcma.index.TrigramIndex.Entry("render", 2, 1)));
+                    new jcma.index.TrigramIndex.Entry("Greeter", 0),
+                    new jcma.index.TrigramIndex.Entry("greet", 1),
+                    new jcma.index.TrigramIndex.Entry("render", 2)));
             try (jcma.index.TrigramIndex idx = jcma.index.TrigramIndex.load(seg)) {
                 List<Integer> hits = idx.searchSymbols("reet"); // substring of Greeter + greet, not render
                 if (!hits.contains(0) || !hits.contains(1) || hits.contains(2)) {
                     throw new IllegalStateException("trigram: unexpected search result " + hits);
                 }
-                int[] files = idx.candidateFiles("end"); // only "render", in file 1
+            }
+        } finally {
+            Files.deleteIfExists(seg);
+            Files.deleteIfExists(dir);
+        }
+    }
+
+    /**
+     * Capability: round-trip a {@link jcma.index.UsageNameIndex} through the real FFM write/read path
+     * and run an exact-match prune — proves the mmap'd name dictionary (binary-searched) + int32
+     * posting slices survive native-image (the §5.1 find-references candidate-file prune).
+     */
+    static void capUsage() throws Exception {
+        Path dir = Files.createTempDirectory("jcma-selftest-usage");
+        Path seg = dir.resolve(jcma.index.UsageNameIndexer.FILE_NAME);
+        try {
+            java.util.TreeMap<String, java.util.Collection<Integer>> byName = new java.util.TreeMap<>();
+            byName.put("greet", new java.util.TreeSet<>(List.of(0, 2)));
+            byName.put("render", new java.util.TreeSet<>(List.of(1)));
+            jcma.index.UsageNameIndex.write(seg, byName);
+            try (jcma.index.UsageNameIndex idx = jcma.index.UsageNameIndex.load(seg)) {
+                int[] files = idx.candidateFiles("render"); // exact: only "render", in file 1
                 if (files.length != 1 || files[0] != 1) {
-                    throw new IllegalStateException("trigram: unexpected prune " + java.util.Arrays.toString(files));
+                    throw new IllegalStateException("usage: unexpected prune " + java.util.Arrays.toString(files));
+                }
+                if (idx.candidateFiles("gree").length != 0) { // exact, not substring of "greet"
+                    throw new IllegalStateException("usage: substring 'gree' must not match 'greet'");
                 }
             }
         } finally {

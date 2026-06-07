@@ -19,7 +19,7 @@ import jcma.index.Occurrence;
 import jcma.index.Range;
 import jcma.index.Symbol;
 import jcma.index.SourceSet;
-import jcma.index.TrigramIndex;
+import jcma.index.UsageNameIndex;
 import jcma.index.UsageNameIndexer;
 import jcma.obs.Metrics;
 import jcma.workspace.FileTable;
@@ -48,7 +48,7 @@ import java.util.TreeMap;
 public final class EdgeResolver implements AutoCloseable {
 
     private final LsmStore store;
-    private final TrigramIndex usageIndex; // null if usage-names.seg is absent
+    private final UsageNameIndex usageIndex; // null if usage-names.seg is absent
     private final FileTable fileTable;
     private final AnalysisEngine engine;
     private final Indexer indexer;
@@ -64,7 +64,7 @@ public final class EdgeResolver implements AutoCloseable {
     private final Map<String, List<UnconfirmedRef>> unconfirmedByName = new HashMap<>();
     private final Map<Path, List<String>> lineCache = new HashMap<>();
 
-    private EdgeResolver(LsmStore store, TrigramIndex usageIndex, FileTable fileTable,
+    private EdgeResolver(LsmStore store, UsageNameIndex usageIndex, FileTable fileTable,
             AnalysisEngine engine, Indexer indexer, Path repoRoot, Metrics metrics) {
         this.store = store;
         this.usageIndex = usageIndex;
@@ -87,7 +87,7 @@ public final class EdgeResolver implements AutoCloseable {
     public static EdgeResolver open(Path indexDir, Workspace workspace, Metrics metrics) throws IOException {
         LsmStore store = LsmStore.open(indexDir, CompactionPolicy.manual(), metrics);
         Path usagePath = indexDir.resolve(UsageNameIndexer.FILE_NAME);
-        TrigramIndex usageIndex = Files.exists(usagePath) ? TrigramIndex.load(usagePath) : null;
+        UsageNameIndex usageIndex = Files.exists(usagePath) ? UsageNameIndex.load(usagePath) : null;
         FileTable fileTable = FileTable.load(indexDir);
         AnalysisEngine engine = new JavaParserEngine(workspace);
         Path repoRoot = workspace.projectRoot().toAbsolutePath().normalize();
@@ -136,6 +136,11 @@ public final class EdgeResolver implements AutoCloseable {
      * Resolve every not-yet-warm candidate file for {@code simpleName}: write all its resolved edges
      * into the graph and bucket all its misses by target name (so the unconfirmed tail is complete for
      * any name, regardless of query order). Already-warm files are skipped — the cache property.
+     *
+     * <p>The candidate set is {@link UsageNameIndex#candidateFiles} — an <b>exact</b> simple-name match
+     * (vs. the old substring prune), so fewer files are wastefully resolved. Correctness holds: every
+     * true use-site records the exact simple name, so exact match never drops one; substring only ever
+     * over-matched.
      */
     private void ensureResolved(String simpleName) {
         if (usageIndex == null) {

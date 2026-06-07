@@ -308,7 +308,7 @@ public final class LsmStore implements AutoCloseable {
         for (int i = 0; i < symList.size(); i++) {
             Symbol s = symList.get(i);
             idByMoniker.put(s.moniker(), i);
-            entries.add(new TrigramIndex.Entry(s.name() == null ? "" : s.name(), i, s.fileId()));
+            entries.add(new TrigramIndex.Entry(s.name() == null ? "" : s.name(), i));
         }
         List<Csr.Edge> idEdges = new ArrayList<>(allEdges.size());
         for (MonikerEdge e : allEdges) {

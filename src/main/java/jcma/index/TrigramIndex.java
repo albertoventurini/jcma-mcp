@@ -18,13 +18,18 @@ import java.util.Set;
 import java.util.TreeMap;
 
 /**
- * The trigram name index (PRD §5.1 "trigram name index") — name search and the {@code find_references}
- * candidate-file pruning input, the cheap Tier-1 lookup that feeds lazy-resolve. Each indexed
- * {@link Entry} ({@code symbolId, fileId, name}) contributes its name's distinct 3-grams to a
- * postings map; a substring query AND-intersects its trigrams' posting lists to a candidate set,
- * then <b>verifies the substring</b> against each candidate's name (a trigram match is necessary,
- * not sufficient), then ranks. Queries shorter than three characters carry no trigram, so they fall
- * back to verify-against-all rather than silently returning nothing.
+ * The declaration trigram name index (PRD §5.1 "trigram name index") — the {@code search} surface, the
+ * cheap Tier-1 lookup over declarations. Each indexed {@link Entry} ({@code name, symbolId}) contributes
+ * its name's distinct 3-grams to a postings map; a substring query AND-intersects its trigrams' posting
+ * lists to a candidate set, then <b>verifies the substring</b> against each candidate's name (a trigram
+ * match is necessary, not sufficient), then ranks. Queries shorter than three characters carry no
+ * trigram, so they fall back to verify-against-all rather than silently returning nothing.
+ *
+ * <p>The find-references candidate-file prune lives in a separate purpose-built exact-match index now,
+ * {@link UsageNameIndex} — the one-format clause of {@code graph-native-index-design} was dropped
+ * (executive decision 2026-06-07) once the two consumers' requirements diverged (substring→{@code id}
+ * here vs. exact-name→{@code fileId} there). This index is therefore a clean {@code name → symbolId}:
+ * no {@code fileId} column (it was derivable from the node).
  *
  * <p><b>Storage = mmap'd</b> (PRD §11 sub-decision, ratified M1 Task-05): like {@link SymbolStore}
  * and {@link Csr} the postings live in an FFM segment read in place, so only the trigram lists a
@@ -39,9 +44,9 @@ import java.util.TreeMap;
  *
  * <p><b>Segment layout:</b> a {@value #HEADER_BYTES}-byte header (magic, version, entry count {@code
  * nEntries}, trigram count {@code nTrigrams}, section offsets), a dedup {@link StringArena} (names),
- * the entry columns ({@code symbolId, fileId, nameRef}), the {@code nTrigrams} sorted trigram keys
- * (each a {@code long} of three packed UTF-16 units), {@code postingOffset[nTrigrams+1]}, and the
- * flat {@code postings[]} (entry indices, grouped by trigram in key order, ascending within a group).
+ * the entry columns ({@code symbolId, nameRef}), the {@code nTrigrams} sorted trigram keys (each a
+ * {@code long} of three packed UTF-16 units), {@code postingOffset[nTrigrams+1]}, and the flat {@code
+ * postings[]} (entry indices, grouped by trigram in key order, ascending within a group).
  */
 public final class TrigramIndex implements AutoCloseable {
 
@@ -51,25 +56,22 @@ public final class TrigramIndex implements AutoCloseable {
     private static final ValueLayout.OfInt I = ValueLayout.JAVA_INT_UNALIGNED;
     private static final ValueLayout.OfLong L = ValueLayout.JAVA_LONG_UNALIGNED;
     private static final long MAGIC = 0x4A434D4154524731L; // "JCMATRG1"
-    private static final int VERSION = 1;
+    private static final int VERSION = 2; // v2: dropped the fileId column (find-references → UsageNameIndex)
     private static final int HEADER_BYTES = 64;
 
     // Entry columns (each is nEntries int32s), struct-of-arrays like SymbolStore.
     private static final int C_SYMBOL_ID = 0;
-    private static final int C_FILE_ID = 1;
-    private static final int C_NAME_REF = 2;
-    private static final int NUM_ENTRY_COLS = 3;
+    private static final int C_NAME_REF = 1;
+    private static final int NUM_ENTRY_COLS = 2;
 
     /**
-     * One indexable name occurrence: a {@code name} to index by trigram, the {@code symbolId} a
-     * search hit reports, and the {@code fileId} a find-references prune collects. Built from the
-     * symbol set (see {@link #entriesOf}); task-07's pipeline will also feed occurrence names here.
+     * One indexable declaration name: a {@code name} to index by trigram and the {@code symbolId} a
+     * search hit reports. Built from the symbol set (see {@link #entriesOf}).
      *
      * @param name     the name to index (its 3-grams become postings); never {@code null}
      * @param symbolId the symbol id a search result returns
-     * @param fileId   the declaring/using file id (a candidate-file for find-references pruning)
      */
-    public record Entry(String name, int symbolId, int fileId) {
+    public record Entry(String name, int symbolId) {
         public Entry {
             if (name == null) {
                 throw new IllegalArgumentException("entry name must not be null");
@@ -99,12 +101,12 @@ public final class TrigramIndex implements AutoCloseable {
         this.postingsOff = seg.get(L, 56);
     }
 
-    /** Build the entries for every symbol in {@code store} (name indexed; id + declaring file carried). */
+    /** Build the entries for every symbol in {@code store} (name indexed; symbol id carried). */
     public static List<Entry> entriesOf(SymbolStore store) {
         List<Entry> entries = new ArrayList<>(store.size());
         for (int id = 0; id < store.size(); id++) {
             Symbol s = store.symbol(id);
-            entries.add(new Entry(s.name() == null ? "" : s.name(), id, s.fileId()));
+            entries.add(new Entry(s.name() == null ? "" : s.name(), id));
         }
         return entries;
     }
@@ -158,7 +160,6 @@ public final class TrigramIndex implements AutoCloseable {
             for (int e = 0; e < nEntries; e++) {
                 Entry entry = entries.get(e);
                 setCol(seg, entryColOff, nEntries, C_SYMBOL_ID, e, entry.symbolId());
-                setCol(seg, entryColOff, nEntries, C_FILE_ID, e, entry.fileId());
                 setCol(seg, entryColOff, nEntries, C_NAME_REF, e, nameRef[e]);
             }
 
@@ -235,30 +236,6 @@ public final class TrigramIndex implements AutoCloseable {
             ids.add(col(C_SYMBOL_ID, e));
         }
         return new ArrayList<>(ids);
-    }
-
-    /**
-     * File ids whose indexed name contains {@code query} as a substring (case-sensitive), unique and
-     * sorted ascending — the find-references candidate-file prune (PRD §5.1). Phantom/no-file entries
-     * ({@code fileId &lt; 0}) are excluded; an absent query yields an empty array.
-     */
-    public int[] candidateFiles(String query) {
-        if (query == null || query.isEmpty()) {
-            return new int[0];
-        }
-        Set<Integer> files = new java.util.TreeSet<>();
-        for (int e : verifiedEntries(query)) {
-            int fileId = col(C_FILE_ID, e);
-            if (fileId >= 0) {
-                files.add(fileId);
-            }
-        }
-        int[] out = new int[files.size()];
-        int i = 0;
-        for (int f : files) {
-            out[i++] = f;
-        }
-        return out;
     }
 
     @Override

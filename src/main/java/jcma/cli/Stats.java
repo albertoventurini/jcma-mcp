@@ -5,6 +5,7 @@ import jcma.index.Csr;
 import jcma.index.LsmStore;
 import jcma.index.SymbolStore;
 import jcma.index.TrigramIndex;
+import jcma.index.UsageNameIndexer;
 import jcma.obs.Metrics;
 import jcma.obs.Timer;
 
@@ -39,7 +40,8 @@ final class Stats {
             long symBytes = sizeOf(sym);
             long edgeBytes = sizeOf(dir.resolve(Csr.FILE_NAME));
             long triBytes = sizeOf(dir.resolve(TrigramIndex.FILE_NAME));
-            long baseBytes = symBytes + edgeBytes + triBytes;
+            long usageBytes = sizeOf(dir.resolve(UsageNameIndexer.FILE_NAME));
+            long baseBytes = symBytes + edgeBytes + triBytes + usageBytes;
             long logBytes = sizeOf(log);
 
             Metrics metrics = Metrics.create();
@@ -51,8 +53,8 @@ final class Stats {
                     .getOrDefault("replay", new Timer.Snapshot(0, 0, 0));
 
             out.println("index: " + dir);
-            out.printf("base:        %,d bytes (symbols %,d, edges %,d, trigrams %,d)%n",
-                    baseBytes, symBytes, edgeBytes, triBytes);
+            out.printf("base:        %,d bytes (symbols %,d, edges %,d, trigrams %,d, usage-names %,d)%n",
+                    baseBytes, symBytes, edgeBytes, triBytes, usageBytes);
             out.printf("overlay log: %,d bytes (%d file(s) pending)%n", logBytes, overlayFiles);
             out.printf("overlay/base ratio: %.3f%n", baseBytes == 0 ? 0.0 : (double) logBytes / baseBytes);
             out.printf("reopen replay: %d record(s) in %.2f ms%n",

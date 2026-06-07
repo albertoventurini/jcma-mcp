@@ -10,28 +10,28 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
-import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import jcma.index.TrigramIndex.Entry;
 
 /**
- * Task 05 — the FFM trigram name index. Postings map a name's 3-grams → entries
- * ({@code symbolId, fileId, name}); a substring query AND-intersects its trigram posting lists, then
- * <em>verifies</em> the substring (a trigram match is necessary, not sufficient), then ranks. Two
- * outputs are exercised: {@link TrigramIndex#searchSymbols} (ranked ids, the {@code search} surface)
- * and {@link TrigramIndex#candidateFiles} (the find-references file-pruning primitive, PRD §5.1).
+ * Task 05 — the FFM declaration trigram name index. Postings map a name's 3-grams → entries
+ * ({@code name, symbolId}); a substring query AND-intersects its trigram posting lists, then
+ * <em>verifies</em> the substring (a trigram match is necessary, not sufficient), then ranks. This
+ * exercises {@link TrigramIndex#searchSymbols} (ranked ids, the {@code search} surface). The
+ * find-references file-pruning primitive moved to its own exact-match index — see
+ * {@link UsageNameIndexTest}.
  */
 class TrigramIndexTest {
 
     private static final String SEG = TrigramIndex.FILE_NAME;
 
     private static List<Entry> entries(String... names) {
-        // symbolId = index, fileId = index, so each name gets a distinct symbol in its own file.
+        // symbolId = index, so each name gets a distinct symbol.
         List<Entry> es = new ArrayList<>();
         for (int i = 0; i < names.length; i++) {
-            es.add(new Entry(names[i], i, i));
+            es.add(new Entry(names[i], i));
         }
         return es;
     }
@@ -108,44 +108,6 @@ class TrigramIndexTest {
         TrigramIndex.write(p, entries("Greeter", "render"));
         try (TrigramIndex idx = TrigramIndex.load(p)) {
             assertTrue(idx.searchSymbols("xyzzy").isEmpty(), "no candidate for an absent name");
-            assertEquals(0, idx.candidateFiles("xyzzy").length);
-        }
-    }
-
-    @Test
-    void rareNamePrunesToASmallFractionOfFiles(@TempDir Path dir) throws IOException {
-        Path p = dir.resolve(SEG);
-        List<Entry> es = new ArrayList<>();
-        int files = 60;
-        for (int f = 0; f < files; f++) {
-            es.add(new Entry("process", f, f)); // a common name declared in every file
-        }
-        es.add(new Entry("zylophoneFactory", 999, 7)); // a rare name, only in file 7
-        TrigramIndex.write(p, es);
-        try (TrigramIndex idx = TrigramIndex.load(p)) {
-            int[] rare = idx.candidateFiles("zylophone");
-            assertEquals(1, rare.length, "rare name prunes to one file");
-            assertEquals(7, rare[0]);
-            assertTrue(rare.length < files / 10, "rare name touches a small fraction of files");
-
-            int[] common = idx.candidateFiles("process");
-            assertEquals(files, common.length, "the common name's files are all returned");
-            assertEquals(IntStream.range(0, files).boxed().toList(),
-                    java.util.Arrays.stream(common).boxed().toList(), "and they are exactly files 0..59, sorted");
-        }
-    }
-
-    @Test
-    void candidateFilesAreUniqueAndSorted(@TempDir Path dir) throws IOException {
-        Path p = dir.resolve(SEG);
-        // Two distinct symbols named "render" declared in the same file 3 -> file id appears once.
-        TrigramIndex.write(p, List.of(
-                new Entry("render", 0, 3),
-                new Entry("renderAll", 1, 3),
-                new Entry("prerender", 2, 1)));
-        try (TrigramIndex idx = TrigramIndex.load(p)) {
-            assertEquals(List.of(1, 3),
-                    java.util.Arrays.stream(idx.candidateFiles("render")).boxed().toList());
         }
     }
 
@@ -156,7 +118,6 @@ class TrigramIndexTest {
         try (TrigramIndex idx = TrigramIndex.load(p)) {
             assertEquals(0, idx.entryCount());
             assertTrue(idx.searchSymbols("anything").isEmpty());
-            assertEquals(0, idx.candidateFiles("anything").length);
         }
     }
 
@@ -175,9 +136,6 @@ class TrigramIndexTest {
                 // The store ids round-trip through the trigram search: "greet" -> the method symbol.
                 int greetId = store.idOf(greet).getAsInt();
                 assertTrue(idx.searchSymbols("greet").contains(greetId));
-                // Both symbols are declared in file 4, so pruning by "ree" yields exactly file 4.
-                assertEquals(List.of(4),
-                        java.util.Arrays.stream(idx.candidateFiles("ree")).boxed().toList());
             }
         }
     }
