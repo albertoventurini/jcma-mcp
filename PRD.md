@@ -214,9 +214,13 @@ So "store both directions" describes the cache's *structure*; both directions ar
 files are resolved — which the first reverse query triggers and caches until they change.
 
 ### Freshness & incrementality — filesystem-driven (no document-sync)
-MCP is request/response: there is **no `didChange`** notification. So the single source of
-truth for freshness is the **filesystem**, which uniformly handles every edit path — the
-agent's Edit tool, `bash sed`, `git checkout/pull`, another editor.
+MCP is request/response: there is **no client push channel**. And even LSP's `didChange` would
+not close this — it only reports edits made *through the client that owns the buffer* (the same
+blind spot as an agent hook), missing out-of-band edits, while adding an unsaved-buffer/disk
+duality our agent consumer doesn't have. So the single source of truth for freshness is the
+**filesystem**, which uniformly handles every edit path — the agent's Edit tool, `bash sed`,
+`git checkout/pull`, another editor — *because* it is uniform, not as a workaround. (See
+Task-09 for the full producer/backstop analysis.)
 
 - **Per-file fingerprint** in the file table: `(path, size, mtime, contentHash)`. Hash is a
   **fast non-cryptographic** one (e.g. xxHash64) — we need "did the bytes change," not security.
@@ -225,19 +229,23 @@ agent's Edit tool, `bash sed`, `git checkout/pull`, another editor.
   (the de-moduled JDK signatures). Built **once per JDK version** by a short-lived helper JVM that
   reads the host JDK's own `jrt:/` image, then reused across runs/projects (cache hit = no
   subprocess). This is the native-image substitute for `ReflectionTypeSolver`; the JVM/dev path
-  still reflects directly. *(File fingerprints now use xxHash64 (M1 Task-08); this JDK-cache key is
-  still FNV-1a, pending a follow-up migration to the one project-wide hash.)*
+  still reflects directly. *(File fingerprints use xxHash64 (M1 Task-08); this JDK-cache key keeps
+  FNV-1a — a deliberate split, hash matched to input size; see §11.)*
 - **Cold start = one full parse-only scan** (only when the persisted index is missing/
   incompatible): read+hash+parse every file, build Tier-1 + trigram. Inherent (can't index
   without reading every file once), parallel, persisted. **Warm reopen ≠ full scan.**
 - **Warm-reopen reconciliation:** walk the tree, `stat` (metadata only). Diff vs. the file
   table → **new** (parse+add), **deleted** (tombstone), **suspect** (mtime/size differ).
   Hash *suspects only* to confirm; re-parse genuinely-changed, skip mtime-lies (hash matches).
-  Fast path: all mtime+size match → straight to mmap+go. *(Git accelerator: store the indexed
-  HEAD in the header; `git diff --name-only <rev> HEAD` yields the changed set for free.)*
-- **During a session:** a **filesystem watcher** (`WatchService`/native) invalidates
-  proactively; **stat/hash-on-access** on any queried file is the backstop (negligible cost,
-  guarantees freshness for files we actually read).
+  Fast path: all mtime+size match → straight to mmap+go. *(Git accelerator considered and
+  rejected (Task-09): `git diff <rev> HEAD` is cheap but sees only committed changes; `git status`
+  stats every tracked file = O(tree) like our own walk unless fsmonitor-backed — i.e. dominated.)*
+- **During a session:** the freshness *trigger* is a swappable producer behind a `FreshnessSource`
+  seam (Task-09). M1 ships the minimal **stat/hash-on-access** backstop on any queried file
+  (negligible cost, guarantees freshness for files we actually read, no O(tree)-per-query, no
+  freshness window for read files). A proactive **filesystem watcher** is an *optional* drop-in
+  producer, **deferred past M1** (FFM-inotify as the native-clean upgrade, or an external watcher
+  process as the cross-platform escape hatch) — justified by measurement, not assumed.
 
 ### Invalidation — edit-locality + validate-on-read
 - **Structural layer:** stale **iff that file's bytes changed** — purely local, re-parse the
@@ -435,7 +443,13 @@ java-lsp/                      (consider renaming, e.g. jcma/)
   need "did the bytes change", not security — a fast non-cryptographic hash. It backs the per-file
   fingerprint `(size, mtime, contentHash)` in the persisted **file table** (`jcma.workspace.FileTable`),
   which drives warm-reopen reconciliation: stat-only fast path (size+mtime match → skip), hash only
-  the *suspects* (size/mtime differ) to confirm real change vs. an mtime-lie. The intended one
-  project-wide hash; the M1 Task-02b JDK-signature-cache key (still FNV-1a) migrates to it later.
-  Implemented in `jcma.workspace.Fingerprint`.
+  the *suspects* (size/mtime differ) to confirm real change vs. an mtime-lie. Implemented in
+  `jcma.workspace.Fingerprint`.
+  - **Two hashes, deliberately — not one.** xxHash64's speed comes from a 4-lane, 32-byte-stripe
+    design that only engages on **large buffers**; file fingerprints (whole source files, thousands
+    on a cold scan) are exactly that regime, so xxHash64 is a real wall-clock win there. The M1
+    Task-02b **JDK-signature-cache key keeps FNV-1a**: it hashes a one-line `$JAVA_HOME/release` file
+    + the jimage size, **once per startup** on a cache miss. At that size xxHash64's fixed
+    setup/avalanche overhead gives no edge, and FNV-1a is simpler and at least as efficient — so each
+    hash is matched to its input size rather than unified for its own sake.
 - **Exact navigation-correctness bar** for the M0 go/fall-back gate.

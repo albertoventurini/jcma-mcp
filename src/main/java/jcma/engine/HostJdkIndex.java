@@ -114,8 +114,14 @@ public final class HostJdkIndex {
     /**
      * A stable fingerprint of the host JDK: a fast hash over {@code $JAVA_HOME/release} bytes mixed
      * with the {@code lib/modules} jimage size — enough to distinguish JDK version/vendor/build, which
-     * is all the per-version signature cache needs (PRD §5.1 freshness model). FNV-1a 64-bit here;
-     * xxHash64 is the eventual project-wide choice.
+     * is all the per-version signature cache needs (PRD §5.1 freshness model).
+     *
+     * <p><b>FNV-1a 64-bit (not xxHash64) by design.</b> xxHash64's speed comes from a 4-lane,
+     * 32-byte-stripe design that only pays off on large buffers; file fingerprints (whole source
+     * files) use it for exactly that reason. This key is the opposite: a one-line {@code release} file
+     * + an 8-byte size, hashed once per startup on a cache miss. At that size xxHash64's fixed
+     * setup/avalanche overhead buys nothing, so we keep FNV-1a — simpler and at least as efficient for
+     * a tiny cold-path input. Each hash is matched to its input size (PRD §11).
      */
     static String fingerprint(Path javaHome) throws IOException {
         long h = 0xcbf29ce484222325L; // FNV-1a 64-bit offset basis

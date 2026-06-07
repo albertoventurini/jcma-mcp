@@ -15,7 +15,7 @@ fallback.**
 
 M1 turns the four throwaway spikes into the **production core engine + index**: a workspace +
 classpath layer, the §5.1 mmap store (symbol columns, CSR fwd/rev, occurrences, trigram), the
-freshness pipeline (fingerprints, cold scan, warm reconciliation, FS watcher), lazy-resolve-and-
+freshness pipeline (fingerprints, cold scan, warm reconciliation, on-access backstop), lazy-resolve-and-
 cache with edit-locality + validate-on-read invalidation, and virtual-thread cancellable query
 serving. **M2 (MCP surface) and M3 (packaging/hardening) are out of scope** — M1's verification
 surface is a small dev-only `jcma` CLI, not MCP.
@@ -30,7 +30,9 @@ fresh production code, but it ports proven pieces (see Ports inventory). The spi
 - **Native-image is built from task 1 onward** — every task keeps `nativeCompile` green and runs
   a native smoke test of the `jcma` CLI. M0 proved the build order is load-bearing
   (*agent-trace → package → native-image*); keep it green continuously, never deferring.
-- **Full PRD §M1 scope** — includes the live FS watcher and cancellable/time-boxed query serving.
+- **Full PRD §M1 scope** — includes cancellable/time-boxed query serving. *(The live FS watcher was
+  demoted during Task-09 design to an optional, deferred producer behind a `FreshnessSource` seam; M1
+  ships the on-access backstop instead. See task-09.)*
 - **Deliverable = separate task files** (`tasks/task-NN-*.md`), one per task, each pickable in a
   fresh Claude Code session.
 
@@ -128,7 +130,7 @@ java-lsp/
 | 6 | [task-06-lsm-overlay-compaction.md](tasks/task-06-lsm-overlay-compaction.md) | **LSM store + Tier-1 indexing (merged 06+07) + observability** — base+overlay+compaction+durability, the parse-only `Indexer`, and the metrics registry + `jcma stats` |
 | 7 | [task-07-tier1-indexing.md](tasks/task-07-tier1-indexing.md) | *Merged into task 06* (Tier-1 indexing is task-06 phase P2) |
 | 8 | [task-08-freshness-fingerprints.md](tasks/task-08-freshness-fingerprints.md) | Fingerprints, cold scan, warm-reopen reconciliation |
-| 9 | [task-09-fs-watcher.md](tasks/task-09-fs-watcher.md) | Live FS watcher + stat/hash-on-access backstop |
+| 9 | [task-09-fs-watcher.md](tasks/task-09-fs-watcher.md) | Freshness: `reindexOne` + on-access backstop behind a `FreshnessSource` seam (watcher demoted to an optional, deferred producer) |
 | 10 | [task-10-lazy-resolve-cache.md](tasks/task-10-lazy-resolve-cache.md) | Lazy-resolve-and-cache (Tier-2): definition & references |
 | 11 | [task-11-invalidation.md](tasks/task-11-invalidation.md) | Invalidation: edit-locality + validate-on-read |
 | 12 | [task-12-query-serving.md](tasks/task-12-query-serving.md) | Virtual-thread cancellable, time-boxed query serving |
