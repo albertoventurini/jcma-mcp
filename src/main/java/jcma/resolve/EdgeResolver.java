@@ -2,9 +2,11 @@ package jcma.resolve;
 
 import jcma.engine.AnalysisEngine;
 import jcma.engine.JavaParserEngine;
+import jcma.engine.HierarchyKind;
 import jcma.engine.OccurrenceKind;
 import jcma.engine.ParsedUnit;
 import jcma.engine.Position;
+import jcma.engine.ResolvedHierarchy;
 import jcma.engine.ResolvedOccurrence;
 import jcma.engine.ResolvedRef;
 import jcma.engine.ResolvedTarget;
@@ -187,7 +189,77 @@ public final class EdgeResolver implements AutoCloseable {
                                 FailureClassifier.classify(o.failure())));
             }
         }
+        // Structural hierarchy (task-11a): EXTENDS/IMPLEMENTS from a type, OVERRIDES from a method.
+        // src = the enclosing declaration's moniker (its name position); dst = the supertype/overridden
+        // member, or a phantom for external (jar/JDK) targets. Persisted in the same idempotent edit.
+        for (ResolvedHierarchy h : engine.resolveHierarchy(unit)) {
+            String src = enclosingMoniker(fid, h.srcLine(), h.srcCol());
+            if (src == null) {
+                continue;
+            }
+            String dst = targetMoniker(h.target());
+            if (dst != null) {
+                edges.add(new MonikerEdge(src, dst, hierarchyEdgeType(h.kind()), Occurrence.NONE));
+            }
+        }
         store.applyEdit(new FileIndex(fid, tier1.symbols(), edges));
+    }
+
+    // ------------------------------------------------------------------ type hierarchy
+
+    /**
+     * The {@code supertypes(type)} primitive (PRD §6 {@code find_supertypes}): {@code type}'s outgoing
+     * {@code EXTENDS}/{@code IMPLEMENTS} edges, plus a method's {@code OVERRIDES} edges. Resolves the
+     * declaring file (and the simple-name candidates) on demand, then walks {@code fwd}.
+     */
+    public List<MonikerEdge> supertypes(Symbol target) {
+        ensureHierarchyResolved(target);
+        return hierarchyEdges(store.fwd(target.moniker()));
+    }
+
+    /**
+     * The {@code subtypes(type)} primitive (PRD §6 {@code find_subtypes}/{@code find_implementations}):
+     * the {@code EXTENDS}/{@code IMPLEMENTS}/{@code OVERRIDES} edges pointing <em>at</em> {@code target},
+     * i.e. its direct subtypes / implementors / overriders. Walks {@code rev}.
+     */
+    public List<MonikerEdge> subtypes(Symbol target) {
+        ensureHierarchyResolved(target);
+        return hierarchyEdges(store.rev(target.moniker()));
+    }
+
+    /** Resolve {@code target}'s own file (its outgoing hierarchy) + its name candidates (the incoming). */
+    private void ensureHierarchyResolved(Symbol target) {
+        ensureFileResolved(target.fileId());
+        ensureResolved(target.name());
+    }
+
+    /** Resolve a single file by id if not already warm (used for a type's own outgoing hierarchy edges). */
+    private void ensureFileResolved(int fid) {
+        if (fid < 0 || !warmFiles.add(fid)) {
+            return;
+        }
+        Path path = absPathOf(fid);
+        if (path == null || !Files.isRegularFile(path)) {
+            return;
+        }
+        try {
+            resolveFile(fid, path);
+            metrics.counter("resolve.files").add(1);
+        } catch (IOException skip) {
+            // parse failure: leave the file warm (it cannot resolve), surface nothing
+        }
+    }
+
+    private static List<MonikerEdge> hierarchyEdges(Set<MonikerEdge> edges) {
+        List<MonikerEdge> out = new ArrayList<>();
+        for (MonikerEdge e : edges) {
+            if (e.type() == EdgeType.EXTENDS || e.type() == EdgeType.IMPLEMENTS || e.type() == EdgeType.OVERRIDES) {
+                out.add(e);
+            }
+        }
+        out.sort(Comparator.comparing((MonikerEdge e) -> e.type().ordinal())
+                .thenComparing(MonikerEdge::dst).thenComparing(MonikerEdge::src));
+        return out;
     }
 
     // ------------------------------------------------------------------ find_definition
@@ -315,9 +387,13 @@ public final class EdgeResolver implements AutoCloseable {
         return e == null ? SourceSet.MAIN : e.sourceSet();
     }
 
-    private String signatureOf(String moniker) {
+    /** A moniker's display: its indexed signature, the bare phantom signature ({@code ~fqn} → {@code fqn}), or the moniker. */
+    public String signatureOf(String moniker) {
         Symbol s = symbolByMoniker.get(moniker);
-        return s == null ? moniker : display(s.signature(), moniker);
+        if (s != null) {
+            return display(s.signature(), moniker);
+        }
+        return moniker.startsWith("~") ? moniker.substring(1) : moniker;
     }
 
     private static String display(String signature, String fallback) {
@@ -347,6 +423,14 @@ public final class EdgeResolver implements AutoCloseable {
             case INSTANTIATION -> EdgeType.INSTANTIATES;
             case ANNOTATION -> EdgeType.ANNOTATED_BY;
             case NAME, FIELD_ACCESS, TYPE_REF -> EdgeType.REFERENCES;
+        };
+    }
+
+    private static EdgeType hierarchyEdgeType(HierarchyKind kind) {
+        return switch (kind) {
+            case EXTENDS -> EdgeType.EXTENDS;
+            case IMPLEMENTS -> EdgeType.IMPLEMENTS;
+            case OVERRIDES -> EdgeType.OVERRIDES;
         };
     }
 

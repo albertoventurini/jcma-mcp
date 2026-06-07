@@ -249,19 +249,36 @@ Task-09 for the full producer/backstop analysis.)
   producer, **deferred past M1** (FFM-inotify as the native-clean upgrade, or an external watcher
   process as the cross-platform escape hatch) — justified by measurement, not assumed.
 
-### Invalidation — edit-locality + validate-on-read
-- **Structural layer:** stale **iff that file's bytes changed** — purely local, re-parse the
-  one file, swap its slice.
-- **Resolved-edge cache — edit-locality asymmetry:** a **method-body edit** (the common case)
-  changes *no* cross-file resolution — only that file's outgoing edges re-resolve. Only an
-  **API-surface edit** (a public/protected signature, type, supertype, modifier, or the set of
-  overloads) can change how *other* files resolve, and it is scoped by the **changed simple-name
-  set + trigram pruning** to just the files lexically mentioning those names — never a repo-wide
-  invalidation.
-- **Validate-on-read backstop:** every cached edge carries the **dependency fingerprint**
-  (file hashes) it was resolved against; on read, a mismatch ⇒ stale ⇒ re-resolve. Correctness
-  therefore never depends on getting eager invalidation perfect — worst case is a re-resolve,
-  never a wrong answer (the rust-analyzer/Salsa revalidation principle, in miniature).
+### Invalidation — model-everything, node-diff cascade
+> *Revised (M1 task-11): the earlier "per-edge dependency fingerprint + changed-simple-name-set +
+> trigram" model was undermodelled — a hash is a proxy that detects* that *something changed but
+> discards* what *changed and* who *depended on it, forcing a lexical guess at the blast radius that
+> under-approximates Java's non-lexical dependencies (supertypes, overrides, overloads).
+> Invalidation is now exact graph reachability.*
+- **Change trigger (the filesystem boundary):** a file is stale **iff its bytes changed** — detected
+  by its **content fingerprint** (`size, mtime, xxHash64`). This is the one fact the graph cannot
+  derive about itself, so it stays; everything else is modeled. A changed file is re-parsed and its
+  slice swapped (structural layer).
+- **Edit-locality falls out of the graph, not a heuristic.** References are edges to
+  **member-granularity** nodes, and a node's incoming edges live in the *referrer's* slice. So a
+  **method-body edit** re-parses the edited file (re-deriving only its own outgoing edges) and
+  touches nothing else — its members keep their identity, so every incoming edge stays valid.
+- **Cross-file invalidation = node-diff + reverse-edge walk (exact, not lexical).** Re-indexing a
+  changed file diffs its old vs new node set; for each **removed / signature-changed** node, walk its
+  reverse edges to the *exact* referrers and return them to **unresolved** (they re-resolve lazily on
+  next access). The graph already records who depends on what — we walk it instead of guessing.
+- **Completeness requires modeling the non-lexical dependencies too:** the type hierarchy
+  (`EXTENDS`/`IMPLEMENTS`/`OVERRIDES`) and **unconfirmed references** (persisted as a dependency edge
+  to the type they were attempted against) are first-class edges, so supertype edits and
+  newly-satisfiable lookups cascade by the same reverse-edge walk. (Generic-inference / overload
+  corners remain a thin approximation frontier; the external-code boundary bottoms out at content
+  fingerprints on source files + jars, plus phantom nodes.)
+- **Correctness floor:** a query stat/hash-checks the files it actually reads before answering
+  (on-access backstop), and a tree-scan `FreshnessSource` feeds the changed-file stream while the
+  process is live; either way a changed file is re-indexed and its cascade applied before the read —
+  worst case a re-resolve, never a wrong answer (the rust-analyzer/Salsa revalidation principle).
+  *Value-hash early-cutoff (stop propagating when a re-derived node is identical) is an optional
+  optimization atop the model, deferred until measurement asks for it.*
 
 ---
 

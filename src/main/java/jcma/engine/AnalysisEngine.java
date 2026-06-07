@@ -37,4 +37,15 @@ public interface AnalysisEngine {
      * resolved-edge cache + the unconfirmed tail.
      */
     List<ResolvedOccurrence> resolveOccurrences(ParsedUnit unit);
+
+    /**
+     * Resolve the <em>structural hierarchy</em> of every declaration in {@code unit} (task-11a): for
+     * each type declaration its {@code extends}/{@code implements} targets, and for each method the
+     * <b>direct</b> method it overrides or interface method it implements. Each resolution is guarded
+     * (incl. {@code StackOverflowError}); an unresolvable supertype safe-degrades to nothing rather
+     * than a guessed edge. The list is the input to the {@code EXTENDS}/{@code IMPLEMENTS}/{@code
+     * OVERRIDES} graph edges; external (jar/JDK) supertypes carry a {@code null} {@code declFile}
+     * (→ phantom node).
+     */
+    List<ResolvedHierarchy> resolveHierarchy(ParsedUnit unit);
 }

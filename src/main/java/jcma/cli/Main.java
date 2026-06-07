@@ -73,6 +73,9 @@ public final class Main {
             case "def" -> {
                 return Def.run(args, out, err);
             }
+            case "supertypes" -> {
+                return Supertypes.run(args, out, err);
+            }
             default -> {
                 err.println("jcma: unknown subcommand '" + cmd + "'");
                 usage(err);
@@ -171,6 +174,9 @@ public final class Main {
                                        enclosing symbol, with counts + the unconfirmed tail
                   def <repo> <symbol>  |  def <repo> <file> <line:col>
                                        find a definition by symbol name or by use-site position
+                  supertypes <repo> <symbol>
+                                       print a symbol's EXTENDS/IMPLEMENTS/OVERRIDES edges in both
+                                       directions (supertypes out, subtypes/overriders in)
                 """);
     }
 }

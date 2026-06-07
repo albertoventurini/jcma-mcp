@@ -133,7 +133,10 @@ java-lsp/
 | 8 | [task-08-freshness-fingerprints.md](tasks/task-08-freshness-fingerprints.md) | Fingerprints, cold scan, warm-reopen reconciliation |
 | 9 | [task-09-fs-watcher.md](tasks/task-09-fs-watcher.md) | Freshness: `reindexOne` + on-access backstop behind a `FreshnessSource` seam (watcher demoted to an optional, deferred producer) |
 | 10 | [task-10-lazy-resolve-cache.md](tasks/task-10-lazy-resolve-cache.md) | Lazy-resolve-and-cache (Tier-2): definition & references |
-| 11 | [task-11-invalidation.md](tasks/task-11-invalidation.md) | Invalidation: edit-locality + validate-on-read |
+| 11 | [task-11-invalidation.md](tasks/task-11-invalidation.md) | **Invalidation (model-everything, node-diff cascade)** — parent; split into 11a/11b/11c |
+| 11a | [task-11a-hierarchy-edges.md](tasks/task-11a-hierarchy-edges.md) | Type-hierarchy edges (`EXTENDS`/`IMPLEMENTS`/`OVERRIDES`) |
+| 11b | [task-11b-unconfirmed-edges.md](tasks/task-11b-unconfirmed-edges.md) | Unconfirmed references as persistent dependency edges |
+| 11c | [task-11c-node-diff-cascade.md](tasks/task-11c-node-diff-cascade.md) | Node-diff cascade invalidation + tree-scan `FreshnessSource` |
 | 12 | [task-12-query-serving.md](tasks/task-12-query-serving.md) | Virtual-thread cancellable, time-boxed query serving |
 
 ## Exit criteria (definition of done)

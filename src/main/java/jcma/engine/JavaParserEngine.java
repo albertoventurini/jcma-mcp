@@ -6,7 +6,9 @@ import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ParserConfiguration.LanguageLevel;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
+import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.RecordDeclaration;
+import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
@@ -16,13 +18,18 @@ import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.MethodReferenceExpr;
 import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
+import com.github.javaparser.ast.nodeTypes.NodeWithExtends;
+import com.github.javaparser.ast.nodeTypes.NodeWithImplements;
 import com.github.javaparser.ast.nodeTypes.NodeWithTypeArguments;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.resolution.declarations.AssociableToAST;
 import com.github.javaparser.resolution.declarations.ResolvedConstructorDeclaration;
+import com.github.javaparser.resolution.declarations.ResolvedMethodDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedMethodLikeDeclaration;
+import com.github.javaparser.resolution.declarations.ResolvedReferenceTypeDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedTypeDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedValueDeclaration;
+import com.github.javaparser.resolution.types.ResolvedReferenceType;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JarTypeSolver;
@@ -177,6 +184,94 @@ public final class JavaParserEngine implements AnalysisEngine {
             return new ResolvedOccurrence(o.kind(), o.targetName(),
                     o.startLine(), o.startCol(), o.endLine(), o.endCol(), null, failureOf(o.node(), t));
         }
+    }
+
+    // ---------------------------------------------------------------- hierarchy resolution
+
+    @Override
+    public List<ResolvedHierarchy> resolveHierarchy(ParsedUnit unit) {
+        List<ResolvedHierarchy> out = new ArrayList<>();
+        for (TypeDeclaration<?> td : unit.cu().findAll(TypeDeclaration.class)) {
+            int[] at = namePos(td.getName());
+            if (td instanceof NodeWithExtends<?> ext) {
+                for (ClassOrInterfaceType sup : ext.getExtendedTypes()) {
+                    addSupertype(out, HierarchyKind.EXTENDS, at, sup);
+                }
+            }
+            if (td instanceof NodeWithImplements<?> impl) {
+                for (ClassOrInterfaceType iface : impl.getImplementedTypes()) {
+                    addSupertype(out, HierarchyKind.IMPLEMENTS, at, iface);
+                }
+            }
+        }
+        for (MethodDeclaration md : unit.cu().findAll(MethodDeclaration.class)) {
+            addOverrides(out, md);
+        }
+        return out;
+    }
+
+    /** Resolve one {@code extends}/{@code implements} type and append its edge; guarded — skip on miss. */
+    private void addSupertype(List<ResolvedHierarchy> out, HierarchyKind kind, int[] at, ClassOrInterfaceType type) {
+        try {
+            var rt = type.resolve();
+            if (!rt.isReferenceType()) {
+                return;
+            }
+            ResolvedReferenceType ref = rt.asReferenceType();
+            ResolvedTarget target = ref.getTypeDeclaration()
+                    .map(this::describe)                       // project decl → locatable; jar/JDK → external
+                    .orElseGet(() -> {                         // resolvable name but no declaration handle
+                        String fqn = safe(ref::getQualifiedName);
+                        return new ResolvedTarget(fqn, fqn, null, -1, DeclKind.OTHER);
+                    });
+            out.add(new ResolvedHierarchy(kind, at[0], at[1], target));
+        } catch (Throwable t) {
+            if (DEBUG) t.printStackTrace();
+        }
+    }
+
+    /**
+     * Append an {@code OVERRIDES} relation for {@code md} to each <b>direct</b> ancestor method it
+     * overrides/implements (same name + erased parameter list). Guarded — a method that does not
+     * override, or whose ancestors don't resolve, contributes nothing.
+     */
+    private void addOverrides(List<ResolvedHierarchy> out, MethodDeclaration md) {
+        try {
+            ResolvedMethodDeclaration rm = md.resolve();
+            int[] at = namePos(md.getName());
+            String name = rm.getName();
+            int n = rm.getNumberOfParams();
+            for (ResolvedReferenceType ancestor : rm.declaringType().getAncestors(true)) {
+                ResolvedReferenceTypeDeclaration decl = ancestor.getTypeDeclaration().orElse(null);
+                if (decl == null) {
+                    continue;
+                }
+                for (ResolvedMethodDeclaration cand : decl.getDeclaredMethods()) {
+                    if (cand.getName().equals(name) && cand.getNumberOfParams() == n && sameParams(rm, cand)) {
+                        out.add(new ResolvedHierarchy(HierarchyKind.OVERRIDES, at[0], at[1], describe(cand)));
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            if (DEBUG) t.printStackTrace();
+        }
+    }
+
+    /** True if two same-arity methods have erasure-equal parameter types (the override-match test). */
+    private static boolean sameParams(ResolvedMethodLikeDeclaration a, ResolvedMethodLikeDeclaration b) {
+        for (int i = 0; i < a.getNumberOfParams(); i++) {
+            int idx = i;
+            if (!safe(() -> a.getParam(idx).getType().describe())
+                    .equals(safe(() -> b.getParam(idx).getType().describe()))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** 1-based {@code [line, col]} of a declaration's name node (the {@code monikerAt} bridge key). */
+    private static int[] namePos(com.github.javaparser.ast.expr.SimpleName name) {
+        return name.getBegin().map(p -> new int[] {p.line, p.column}).orElse(new int[] {-1, -1});
     }
 
     /** A resolved declaration → engine-neutral {@link ResolvedTarget} (fqn/signature/site/kind). */
