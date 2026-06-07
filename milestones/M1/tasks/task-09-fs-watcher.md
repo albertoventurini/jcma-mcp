@@ -211,3 +211,23 @@ producer seam. No watcher in M1.**
 ## Done when
 - tests green · native green · `reindexOne` + on-access backstop both observe an out-of-band edit, with
   no whole-tree scan on the common query path.
+
+## Outcome (built)
+Shipped as scoped. Choices made:
+- **`SourceSet` now lives on the `FileTable` row** (Entry gains the tag; format `VERSION` 1→2) — not
+  only denormalized onto each `Symbol.flags`. This lets `reindexOne(path)` recover a file's MAIN/TEST
+  tag from the file row alone (the parse *input*), instead of reverse-engineering it from already-indexed
+  symbols. The symbol-flags copy stays (queries are symbol-centric and self-contained); the two can't
+  drift (a MAIN↔TEST move is also a path change → delete+add → fresh row). *No migration: the single
+  local `.jcma` is dropped & rebuilt.*
+- **New `FreshnessGuard`** owns the in-session `FileTable` (a check is a map lookup, not a disk reload) +
+  open store + indexer; `reindexOne` persists the table only when a row actually changed (the common
+  nothing-changed query writes nothing). Branches mirror `Reconciler` NEW/SUSPECT, plus
+  **tombstone-on-missing** (a queried file deleted out of band → tombstone its id + drop the row).
+- **`FreshnessSource`** = thin producer seam (`drainChanged()` + `none()`); M1 ships `none()` (on-access
+  only). Drop-in slot for a later watcher/journal — `ensureFresh` drains it then validates the read file.
+- Lightweight metrics counters (`freshness.checked/reindexed/mtimeLie/tombstoned`) per the observability
+  convention.
+- **Not wired into a query CLI yet** — there is no Tier-2 query path in M1; `ensureFresh` is consumed by
+  task-10. The manual CLI check (query reflects an out-of-band edit) is therefore exercised by the
+  `FreshnessGuardTest` unit tests, not a CLI command, until task-10 wires it in.

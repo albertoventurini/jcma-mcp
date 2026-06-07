@@ -82,7 +82,8 @@ java-lsp/
 ├─ gradlew · gradle/wrapper/…                     pinned wrapper (9.5.1)
 ├─ src/main/java/jcma/
 │   ├─ engine/        AnalysisEngine interface + JavaParser/SymbolSolver impl   (ports SolverSetup)
-│   ├─ workspace/     source-root discovery, Maven pom parse, manual classpath, fingerprints, watcher
+│   ├─ workspace/     source-root discovery, Maven pom parse, manual classpath, fingerprints,
+│   │                 reconcile + on-access freshness backstop (FreshnessGuard/FreshnessSource)
 │   ├─ index/         §5.1 store: columns, CSR, occurrences, trigram, LSM overlay, fingerprints
 │   │                 (ports SpikeD.Base/Store)
 │   ├─ resolve/       lazy-resolve-and-cache, invalidation                       (ports FailureClassifier)

@@ -4,6 +4,8 @@ import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import jcma.index.SourceSet;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -36,10 +38,16 @@ public final class FileTable {
     public static final String FILE_NAME = "files.tbl";
 
     private static final int MAGIC = 0x4A464D54; // "JFMT"
-    private static final int VERSION = 1;
+    private static final int VERSION = 2; // v2 adds the per-row SourceSet tag
 
-    /** A table row: the file's stable id and the fingerprint it was last indexed against. */
-    public record Entry(int fileId, Fingerprint fingerprint) {}
+    /**
+     * A table row: the file's stable id, the fingerprint it was last indexed against, and its
+     * {@link SourceSet} (MAIN/TEST). The source set is recorded here — not only denormalized onto each
+     * {@link jcma.index.Symbol}'s flags — so a per-file reconcile ({@code FreshnessGuard.reindexOne})
+     * can re-parse a changed file with the correct tag from the file row alone, without reaching back
+     * into the indexed symbols.
+     */
+    public record Entry(int fileId, Fingerprint fingerprint, SourceSet sourceSet) {}
 
     private final Map<Path, Entry> byPath;
     private final Map<Integer, Path> byId;
@@ -74,7 +82,8 @@ public final class FileTable {
                 Path path = Path.of(readStr(in));
                 int fileId = in.readInt();
                 Fingerprint fp = new Fingerprint(in.readLong(), in.readLong(), in.readLong());
-                byPath.put(path, new Entry(fileId, fp));
+                SourceSet sourceSet = SourceSet.values()[in.readInt()];
+                byPath.put(path, new Entry(fileId, fp, sourceSet));
                 byId.put(fileId, path);
             }
             return new FileTable(byPath, byId, nextId);
@@ -116,9 +125,9 @@ public final class FileTable {
         return nextId++;
     }
 
-    /** Insert or replace the entry for {@code path}. */
-    public void put(Path path, int fileId, Fingerprint fingerprint) {
-        byPath.put(path, new Entry(fileId, fingerprint));
+    /** Insert or replace the entry for {@code path}, tagging it with its {@code sourceSet}. */
+    public void put(Path path, int fileId, Fingerprint fingerprint, SourceSet sourceSet) {
+        byPath.put(path, new Entry(fileId, fingerprint, sourceSet));
         byId.put(fileId, path);
     }
 
@@ -151,6 +160,7 @@ public final class FileTable {
                 out.writeLong(e.fingerprint().size());
                 out.writeLong(e.fingerprint().mtime());
                 out.writeLong(e.fingerprint().contentHash());
+                out.writeInt(e.sourceSet().ordinal());
             }
         }
         Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);

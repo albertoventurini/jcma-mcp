@@ -102,7 +102,7 @@ public final class Reconciler {
             FileTable.Entry prev = table.get(rel);
             if (prev == null) {                                   // NEW
                 int id = table.allocateId();
-                table.put(rel, id, Fingerprint.of(c.absolute()));
+                table.put(rel, id, Fingerprint.of(c.absolute()), c.set());
                 toParse.add(new Indexer.ParseRequest(id, c.absolute(), c.set()));
                 added++;
                 tableDirty = true;
@@ -110,7 +110,7 @@ public final class Reconciler {
                 unchanged++;                                      // fast path
             } else {                                              // SUSPECT → confirm by hash
                 Fingerprint fp = Fingerprint.of(c.absolute());
-                table.put(rel, prev.fileId(), fp);                // refresh size/mtime either way
+                table.put(rel, prev.fileId(), fp, c.set());       // refresh size/mtime either way
                 tableDirty = true;
                 if (fp.contentHash() == prev.fingerprint().contentHash()) {
                     unchanged++;                                  // mtime-lie

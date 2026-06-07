@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import jcma.index.SourceSet;
+
 import java.io.IOException;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
@@ -33,8 +35,8 @@ class FileTableTest {
         FileTable t = FileTable.load(dir);
         int ia = t.allocateId();
         int ib = t.allocateId();
-        t.put(A, ia, new Fingerprint(10, 111, 0xAAAAL));
-        t.put(B, ib, new Fingerprint(20, 222, 0xBBBBL));
+        t.put(A, ia, new Fingerprint(10, 111, 0xAAAAL), SourceSet.MAIN);
+        t.put(B, ib, new Fingerprint(20, 222, 0xBBBBL), SourceSet.MAIN);
         t.save(dir);
 
         FileTable r = FileTable.load(dir);
@@ -47,15 +49,28 @@ class FileTableTest {
         assertEquals(10, ea.fingerprint().size());
         assertEquals(111, ea.fingerprint().mtime());
         assertEquals(0xAAAAL, ea.fingerprint().contentHash());
+        assertEquals(SourceSet.MAIN, ea.sourceSet(), "the MAIN tag round-trips");
 
         assertEquals(B, r.pathOf(ib), "id → path round-trips");
         assertTrue(r.paths().contains(A) && r.paths().contains(B));
     }
 
     @Test
+    void sourceSetTagRoundTrips(@TempDir Path dir) throws IOException {
+        FileTable t = FileTable.load(dir);
+        t.put(A, t.allocateId(), new Fingerprint(10, 111, 0xAAAAL), SourceSet.MAIN);
+        t.put(B, t.allocateId(), new Fingerprint(20, 222, 0xBBBBL), SourceSet.TEST);
+        t.save(dir);
+
+        FileTable r = FileTable.load(dir);
+        assertEquals(SourceSet.MAIN, r.get(A).sourceSet(), "a MAIN file reloads as MAIN");
+        assertEquals(SourceSet.TEST, r.get(B).sourceSet(), "a TEST file reloads as TEST, not defaulted to MAIN");
+    }
+
+    @Test
     void removeDropsAnEntry(@TempDir Path dir) throws IOException {
         FileTable t = FileTable.load(dir);
-        t.put(A, t.allocateId(), new Fingerprint(1, 2, 3));
+        t.put(A, t.allocateId(), new Fingerprint(1, 2, 3), SourceSet.MAIN);
         t.remove(A);
         assertNull(t.get(A));
         assertTrue(t.isEmpty());
@@ -65,7 +80,7 @@ class FileTableTest {
     void idsAreNeverReusedAfterDeletion(@TempDir Path dir) throws IOException {
         FileTable t = FileTable.load(dir);
         int i0 = t.allocateId();
-        t.put(A, i0, new Fingerprint(1, 2, 3));
+        t.put(A, i0, new Fingerprint(1, 2, 3), SourceSet.MAIN);
         t.remove(A);
         int i1 = t.allocateId();
         assertNotEquals(i0, i1, "a fresh id, not the deleted one");
@@ -75,7 +90,7 @@ class FileTableTest {
     @Test
     void saveReplacesRatherThanAppends(@TempDir Path dir) throws IOException {
         FileTable t = FileTable.load(dir);
-        t.put(A, t.allocateId(), new Fingerprint(1, 2, 3));
+        t.put(A, t.allocateId(), new Fingerprint(1, 2, 3), SourceSet.MAIN);
         t.save(dir);
 
         FileTable t2 = FileTable.load(dir);
