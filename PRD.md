@@ -268,11 +268,20 @@ Task-09 for the full producer/backstop analysis.)
   reverse edges to the *exact* referrers and return them to **unresolved** (they re-resolve lazily on
   next access). The graph already records who depends on what — we walk it instead of guessing.
 - **Completeness requires modeling the non-lexical dependencies too:** the type hierarchy
-  (`EXTENDS`/`IMPLEMENTS`/`OVERRIDES`) and **unconfirmed references** (persisted as a dependency edge
-  to the type they were attempted against) are first-class edges, so supertype edits and
-  newly-satisfiable lookups cascade by the same reverse-edge walk. (Generic-inference / overload
-  corners remain a thin approximation frontier; the external-code boundary bottoms out at content
-  fingerprints on source files + jars, plus phantom nodes.)
+  (`EXTENDS`/`IMPLEMENTS`/`OVERRIDES`) and **unconfirmed references** are first-class edges, so
+  supertype edits and newly-satisfiable lookups cascade by the same reverse-edge walk. An unconfirmed
+  reference keeps its **syntactic edge type** (a failed `foo()` is still a `CALLS` edge — *model what
+  the code is*, so "count the calls in a class" stays one edge type) and points at a **name-keyed
+  placeholder node** `<simple-name>~UNRESOLVED` that coalesces every failed reference to that name.
+  Resolution status thus lives on the **target node**, not the edge: a newly-defined `foo` is a node
+  with simple name `foo`, so the cascade walks `rev(foo~UNRESOLVED)` to the exact referrers and
+  re-resolves them — the negative case (a name that didn't resolve now does) is the *same* name-keyed
+  reverse walk, and it works whether or not the receiver type ever existed. (Receiver-type precision —
+  re-resolving only when *that* type changes — is a deferred optimization, not needed for
+  correctness. Generic-inference / overload corners remain a thin approximation frontier; the
+  external-code boundary bottoms out at content fingerprints on source files + jars, plus phantom
+  nodes — a confirmed reference to a library symbol is a normal edge to its own phantom, distinct from
+  an `…~UNRESOLVED` placeholder.)
 - **Correctness floor:** a query stat/hash-checks the files it actually reads before answering
   (on-access backstop), and a tree-scan `FreshnessSource` feeds the changed-file stream while the
   process is live; either way a changed file is re-indexed and its cascade applied before the read —

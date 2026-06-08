@@ -52,10 +52,11 @@ class FindReferencesTest {
             References refs = resolver.findReferences(target(resolver));
 
             assertTrue(refs.hasUnconfirmedTail(), "Mystery.poke's thing.run() cannot be ruled in or out");
-            assertEquals(1, refs.unconfirmed().size());
-            UnconfirmedRef u = refs.unconfirmed().get(0);
-            assertTrue(u.file().toString().endsWith("Mystery.java"), "the unresolved candidate's file");
-            assertTrue(u.snippet().contains("thing.run()"), "carries the candidate snippet: " + u.snippet());
+            assertEquals(2, refs.unconfirmed().size(), "Mystery.poke (unknown type) + KnownMiss.use (known type)");
+            UnconfirmedRef mystery = refs.unconfirmed().stream()
+                    .filter(u -> u.file().toString().endsWith("Mystery.java"))
+                    .findFirst().orElseThrow(() -> new AssertionError("Mystery.poke candidate missing"));
+            assertTrue(mystery.snippet().contains("thing.run()"), "carries the candidate snippet: " + mystery.snippet());
             assertFalse(monikersOf(refs).contains("app/Mystery#poke()."),
                     "the unresolved candidate is NOT presented as a confirmed reference");
         }

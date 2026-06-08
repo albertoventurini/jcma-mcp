@@ -61,9 +61,17 @@ public final class EdgeResolver implements AutoCloseable {
     private final Map<Integer, List<Symbol>> symbolsByFile = new HashMap<>();
     private final Map<String, Symbol> symbolByMoniker = new HashMap<>();
 
+    /**
+     * Reserved moniker suffix for the <b>name-keyed unconfirmed placeholder</b> node (task-11b). A
+     * failed reference to simple name {@code foo} is a normal {@code CALLS}/… edge whose {@code dst}
+     * is {@code foo}{@value} — coalescing every miss on that name onto one node so a later definition
+     * of {@code foo} cascades by a plain {@code rev(foo}{@value}{@code )} walk. {@code ~} never
+     * appears in a real moniker (Java identifiers + {@code / # ( ) . ;}), so it cannot collide.
+     */
+    public static final String UNRESOLVED_SUFFIX = "~UNRESOLVED";
+
     // Tier-2 session state.
     private final Set<Integer> warmFiles = new HashSet<>();
-    private final Map<String, List<UnconfirmedRef>> unconfirmedByName = new HashMap<>();
     private final Map<Path, List<String>> lineCache = new HashMap<>();
 
     private EdgeResolver(LsmStore store, UsageNameIndex usageIndex, FileTable fileTable,
@@ -130,8 +138,28 @@ public final class EdgeResolver implements AutoCloseable {
                     .thenComparingInt(r -> r.range().startCol()));
             groups.add(new ReferenceGroup(g.getKey(), signatureOf(g.getKey()), g.getValue()));
         }
-        List<UnconfirmedRef> tail = unconfirmedByName.getOrDefault(target.name(), List.of());
-        return new References(groups, tail);
+        return new References(groups, unconfirmedTail(target.name()));
+    }
+
+    /**
+     * The unconfirmed tail for {@code name}, read back from the graph: the incoming edges of the
+     * name-keyed placeholder {@code name}{@link #UNRESOLVED_SUFFIX} (every miss on that name coalesces
+     * there). These are persisted edges, so the tail is graph-backed and survives a restart — no
+     * in-session bookkeeping. Each edge's occurrence carries the use site + the {@link
+     * FailureClassifier.Cause} ordinal (in its enclosing slot).
+     */
+    private List<UnconfirmedRef> unconfirmedTail(String name) {
+        List<UnconfirmedRef> tail = new ArrayList<>();
+        for (MonikerEdge e : store.rev(name + UNRESOLVED_SUFFIX)) {
+            Occurrence o = e.occurrence();
+            Path file = absPathOf(o.fileId());
+            tail.add(new UnconfirmedRef(o.fileId(), file, o.range(),
+                    snippet(file, o.range().startLine()), causeOf(o)));
+        }
+        tail.sort(Comparator.comparing((UnconfirmedRef u) -> String.valueOf(u.file()))
+                .thenComparingInt(u -> u.range().startLine())
+                .thenComparingInt(u -> u.range().startCol()));
+        return tail;
     }
 
     /**
@@ -183,10 +211,14 @@ public final class EdgeResolver implements AutoCloseable {
                     Occurrence occ = new Occurrence(fid, range, -1, roleOf(o.kind()));
                     edges.add(new MonikerEdge(enclosing, dst, edgeTypeOf(o.kind()), occ));
                 }
-            } else {
-                unconfirmedByName.computeIfAbsent(o.targetName(), k -> new ArrayList<>())
-                        .add(new UnconfirmedRef(fid, path, range, snippet(path, o.startLine()),
-                                FailureClassifier.classify(o.failure())));
+            } else if (o.targetName() != null) {
+                // Unconfirmed reference (task-11b): a faithful syntactic edge to the name-keyed
+                // placeholder. The Cause ordinal rides the occurrence's otherwise-unused enclosing
+                // slot (a reference edge keeps its enclosing decl as the edge src, not here).
+                Occurrence occ = new Occurrence(fid, range,
+                        causeSlot(FailureClassifier.classify(o.failure())), roleOf(o.kind()));
+                edges.add(new MonikerEdge(enclosing, o.targetName() + UNRESOLVED_SUFFIX,
+                        edgeTypeOf(o.kind()), occ));
             }
         }
         // Structural hierarchy (task-11a): EXTENDS/IMPLEMENTS from a type, OVERRIDES from a method.
@@ -432,6 +464,18 @@ public final class EdgeResolver implements AutoCloseable {
             case IMPLEMENTS -> EdgeType.IMPLEMENTS;
             case OVERRIDES -> EdgeType.OVERRIDES;
         };
+    }
+
+    /** A {@link FailureClassifier.Cause} → the int stored in an unconfirmed edge's enclosing slot. */
+    private static int causeSlot(FailureClassifier.Cause cause) {
+        return cause.ordinal();
+    }
+
+    /** Read the {@link FailureClassifier.Cause} back from an unconfirmed edge's occurrence. */
+    private static FailureClassifier.Cause causeOf(Occurrence o) {
+        int slot = o.enclosingSymbolId();
+        FailureClassifier.Cause[] causes = FailureClassifier.Cause.values();
+        return slot >= 0 && slot < causes.length ? causes[slot] : FailureClassifier.Cause.OTHER;
     }
 
     private static Occurrence.Role roleOf(OccurrenceKind kind) {

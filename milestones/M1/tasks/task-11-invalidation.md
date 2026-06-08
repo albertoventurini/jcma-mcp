@@ -56,11 +56,22 @@ and let invalidation be a *node-diff + reverse-edge walk* instead of a hash + tr
   - Model `EXTENDS / IMPLEMENTS / OVERRIDES` as real edges (owed to §6 anyway). Then `Service`'s
     *effective* surface change is a change to its modeled structure (a new `EXTENDS` edge), and its
     referrers are reachable. *(task-11a)*
-  - Model the unconfirmed/failed reference as a **persistent edge to the type it was attempted
-    against**, instead of the in-session `unconfirmedByName` list it is today:
-    `Client.poke --(unresolved foo)--> Service`. Then when `Service` gains `foo`, the node-diff on
-    `Service` walks `rev(Service)` → `Client` → re-resolve → it now binds. The hardest case becomes a
-    plain reverse-edge walk. *(task-11b)*
+  - Model the unconfirmed/failed reference as a **persistent edge to a name-keyed placeholder node**,
+    instead of the in-session `unconfirmedByName` list it is today. The edge keeps its **syntactic
+    type** (a failed `foo()` is still a `CALLS` edge — *model what the code is*) and points at
+    `foo~UNRESOLVED`, a placeholder coalescing every failed reference to the simple name `foo`:
+    `Client.poke --CALLS--> foo~UNRESOLVED`. Then when *any* `foo` is defined — a node with simple
+    name `foo` — the cascade walks `rev(foo~UNRESOLVED)` → `Client` → re-resolve → it now binds. The
+    hardest case becomes a plain name-keyed reverse-edge walk that works **whether or not the receiver
+    type ever existed** (the agent may write the call before the callee's file). *(task-11b)*
+
+    *Why a placeholder, not "an edge to the receiver type": the receiver type often doesn't exist yet
+    either, and even when the callee is finally written it gets a real moniker we couldn't have
+    predicted (`app/Service#foo(int).`), so no pre-created node matches it by moniker — the cascade
+    must be **name-keyed**. Resolution status lives on the **target node** (the `~UNRESOLVED`
+    placeholder), keeping the edge faithful to the syntax. Receiver-type precision is a deferred
+    optimization. (Decision reopened with new evidence — the write-call-before-callee case — and the
+    docs updated to match, per the repo convention.)*
 
 So the cascade — node-diff + reverse-edge walk over a fully-modeled graph — is **exact**: no lexical
 approximation, no hash-as-proxy. It is strictly better than the API-fingerprint+trigram scheme, and
@@ -86,6 +97,12 @@ The cascade (11c) must walk **all** dependency edge types uniformly, so build th
 - **Hierarchy + unconfirmed references are modeled as edges** (11a, 11b) so the cascade is complete;
   these also serve PRD §6 (`find_subtypes`/`find_implementations`/`call_hierarchy`) — reuse, not
   speculation.
+- **Unconfirmed references keep their syntactic edge type and point at a name-keyed placeholder
+  node** `<name>~UNRESOLVED` — *not* a synthetic `UNRESOLVED` edge type, and *not* an edge to the
+  receiver type. (Reopened with new evidence: the receiver type frequently doesn't exist yet either,
+  and the eventual real callee has an unpredictable moniker, so the cascade must be name-keyed;
+  modeling the syntactic kind on the edge keeps "count the calls" a single edge type. PRD §5.1 + the
+  negative-case bullet above updated to match.) Receiver-type precision is a deferred optimization.
 - **Value-hash early-cutoff** (stop propagating when a re-derived node is byte-identical) is an
   *optional* optimization atop the model — **deferred** until measurement asks for it.
 - Residual approximation frontier (generic inference / overload corners) is accepted; the
