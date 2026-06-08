@@ -7,6 +7,21 @@
 > implemented** — see *Implemented* below; the whole `EdgeResolverCommonsIT` (incl. the 64-file
 > `isEmpty` case that previously ran for minutes) now completes in ~27 s.
 
+> **Update — Option B measured: no gain ON THIS CORPUS (2026-06-08).** Option B (patch
+> `BlockStmtContext`'s `indexOf`) was implemented behind a red→pause→green gate, measured, and
+> **reverted**: on the commons-lang corpus it produced **no measurable gain** (cold `isEmpty`
+> 10.1 s stock vs 9.1 s patched — within run-to-run noise; `getProperty` was marginally *slower*
+> patched). A JFR profile of the residual ~27 s shows **why**: Option A already drove the JavaParser
+> #4975 pathology to **0 profiler samples** (`EqualsVisitor`/`NodeList.indexOf`/`typePatternExprs`
+> never appear) *on this corpus*, so making each such resolve cheaper buys nothing **here**. The
+> residual cost here is **plain parsing** — ~75 % of samples are in `GeneratedJavaParser`, dominated by
+> `JavaParserTypeSolver.parseDirectory` re-parsing whole source *directories* to resolve a type.
+> **This is workload-dependent, not a verdict on Option B:** commons-lang is `parseDirectory`-bound,
+> not #4975-bound. Option B remains the correct lever for a workload that genuinely *is* #4975-bound
+> (a hot name resolved many times inside a few very large methods, or type-pattern code), and its
+> delivery mechanism was built and proven. **Profile first and let the profile pick the lever** — see
+> *Fix options → B* and *What the residual ~27 s actually is → the levers* below.
+
 ## Implemented (Option A — two-layer, name-scoped)
 
 The literal "name-scope every occurrence" of Option A as first written has **two gaps** the
@@ -34,8 +49,10 @@ calls to **~244** (the `resolve.values` metric, gated by `EdgeResolverCommonsIT`
 tests stay green. Engine seam: `AnalysisEngine.resolveOccurrences(unit, simpleName)` (value layer,
 filters on the cheap syntactic `Occ.targetName()` *before* `.resolve()`) + `resolveTypeReferences(unit)`
 (structural layer). `EdgeResolver` accumulates the layers per file in a `FileSlice` and re-applies
-their union (since `applyEdit` replaces a file's whole slice). Option B below remains the orthogonal
-lever if a single name in a giant method ever still blows the budget.
+their union (since `applyEdit` replaces a file's whole slice). ~~Option B below remains the orthogonal
+lever if a single name in a giant method ever still blows the budget.~~ **(Corrected 2026-06-08:
+Option B was implemented, measured to not help, and reverted — see the *Update* callout at the top
+and *What the residual ~27 s actually is* below. The next lever is the type solver, not the engine.)**
 
 ## TL;DR
 
@@ -250,9 +267,25 @@ instant warm; a common name called many times *inside* a few giant methods may s
 A finer prefilter (gate on **arity** before resolving) is possible but risks turning a found-ref into
 a silent miss (overloads/varargs) for a few percent gain — not worth it unless measurement demands.
 
-### B. Patch the JavaParser pathology (orthogonal lever, if A isn't enough)
+### B. Patch the JavaParser pathology — ⏸ MEASURED: NO GAIN ON THIS CORPUS, REVERTED (2026-06-08)
 
-Mirror PR #4976's *target* but with a simpler, stateless mechanism: patch **only**
+> **This option was implemented, measured, and reverted — because commons-lang is `parseDirectory`-bound,
+> not #4975-bound, not because the patch is wrong.** After Option A, JavaParser #4975 is **0 profiler
+> samples** on the commons-lang corpus, so making each `indexOf` cheaper changes nothing *here*. Clean
+> A/B: cold `isEmpty` 10.1 s stock vs 9.1 s patched (within noise), `getProperty` marginally *slower*
+> patched; the `StatementContext:258` site was also a non-hotspot (~396 hits, no gain). **Option B
+> stays a recommended lever for a workload that genuinely IS #4975-bound** — a hot name resolved many
+> times inside a few very large methods, or type-pattern code, where the profile shows
+> `EqualsVisitor` / `NodeList.indexOf` / `typePatternExprs`. The delivery mechanism — "patch +
+> repackage one class" (a Gradle task rebuilding `javaparser-symbol-solver-core` with a single
+> `BlockStmtContext.class` swapped; no classpath-shadow / split-package fragility, native-image-safe) —
+> was **built and proven to work**; only the *need* was absent here. PR #4976 is the orthogonal upstream
+> alternative. **Profile first**: if `parseDirectory` / `GeneratedJavaParser` dominate (as here), use
+> the index-backed solver (*What the residual ~27 s actually is* below) instead; if the #4975 frames
+> dominate, this is the lever. The concrete proposal follows.
+
+The original (now-superseded) proposal: mirror PR #4976's *target* but with a simpler, stateless
+mechanism: patch **only**
 `BlockStmtContext.typePatternExprsExposedToChild` to find the position by an **identity** scan,
 leaving `NodeList`/`Node` untouched:
 
@@ -280,10 +313,62 @@ lands the fix, drop the patch and upgrade — no permanent fork.
 ### Recommended sequence
 
 1. **Name-scope (A)** — no fork, no correctness risk, ~26× fewer slow resolutions; may get us under
-   budget on its own (warm cache already handles repeats). Follow the red→pause→green gate.
+   budget on its own (warm cache already handles repeats). Follow the red→pause→green gate. **✅ Done
+   (commit a165707).**
 2. **Measure** on the commons-lang corpus (cold `find_references` on `getProperty`, `isEmpty`).
-3. **Only if a real name still blows the budget**, add the one-method `BlockStmtContext` identity
-   patch (B). The two compose: A reduces entries into the slow path; B makes each entry cheap.
+   **✅ Done — A alone drives #4975 to 0 profiler samples.**
+3. **Only if a real name still blows the budget on #4975, add the one-method `BlockStmtContext`
+   identity patch (B).** Tried on commons-lang (2026-06-08) and reverted — **not** because B is wrong,
+   but because no name blows the #4975 budget on *this* corpus: the residual ~27 s is parsing, not the
+   `indexOf` pathology (see the next section). B stays the lever for a workload that profiles as
+   #4975-bound; on a `parseDirectory`-bound workload (like this one) use the index-backed solver
+   instead. **Profile decides.**
+
+## What the residual ~27 s actually is (2026-06-08 JFR profile)
+
+After Option A, the cold `EdgeResolverCommonsIT` suite is ~27 s. Profiling it (JFR, `settings=profile`,
+cold `refs isEmpty` over the 527-file commons-lang corpus) localises the cost decisively — and it is
+**not** JavaParser #4975:
+
+- **0 samples** in `EqualsVisitor` / `NodeList.indexOf` / `typePatternExprs` — the #4975 pathway is
+  gone *on this corpus* (this is exactly why Option B above buys nothing **here** — it's the right
+  lever only when these frames *do* dominate).
+- **~75 % of samples** are in `GeneratedJavaParser` (the lexer/parser): `jjMoveNfa_0`, `jj_3R_*`,
+  `getNextToken`, `jj_scan_token`, … — i.e. **parsing Java source**.
+- **751 / 981 samples** sit under **`JavaParserTypeSolver.parseDirectory`**: JavaSymbolSolver's
+  source-root type solver re-parses whole package **directories** to resolve a single type. For
+  commons-lang's flat `org.apache.commons.lang3` package (~50 large files, `StringUtils` ≈ 9k lines),
+  resolving *any* type there re-parses the entire package — redoing work jcma's own index already holds.
+- The solver's caches (`parsedFiles` / `parsedDirectories`, built in `JavaParserEngine.buildParser()`)
+  use Guava `.softValues()` with **no size cap** (`CACHE_SIZE_UNSET`), so entries are GC-evictable and
+  directories get **re-parsed** under memory pressure.
+- jcma's own `Occurrences.scan` parses candidate files **separately** from the solver (~45 % sample
+  overlap) → likely **double-parsing** the same files.
+
+The split is ~equal between the two parse paths (type-solver `parseDirectory` ≈ 42 %, occurrence
+scan ≈ 45 %, overlapping in the parser).
+
+### The levers for a `parseDirectory`-bound workload (effort / payoff order)
+
+These address the parse-bound profile above. They are the alternative to Option B, *chosen by the
+profile* — not a universal replacement for it (a #4975-bound profile still wants Option B).
+
+1. **Bounded strong-ref CU cache for the source solver** (cheap): construct `JavaParserTypeSolver`
+   via its 5-arg constructor with an explicit bounded *strong* cache sized to the corpus, so parsed
+   directories aren't GC-evicted and re-parsed. **Spiked + reverted (2026-06-08):** a re-parse gate
+   came back green at the 2 GB test heap (0 within-instance re-parses), so there's no thrashing to fix
+   *at that heap* — this is a memory-pressure safety net (a constrained native binary could still
+   evict), not the cold-latency fix.
+2. **Share one parsed-CU cache** between `Occurrences.scan` and the type solver — stop parsing each
+   candidate file twice.
+3. **Index-backed `TypeSolver`** (architectural, biggest win): jcma already maps type→file, so a
+   custom solver can parse the *single* file for a requested type instead of `parseDirectory`'s
+   whole-package parse. More design + correctness work (nested types, `package-info`, etc.), but it
+   removes the dominant cost structurally. (~450 of the 527 corpus files are parsed to resolve just
+   two symbols today — this is what that fixes.)
+
+All three live at the **type-solver / parse** layer (`JavaParserEngine.buildParser`), distinct from
+the resolution-walk layer that #4975 / Option B addresses — which is why *the profile picks the lever*.
 
 ## Implementation handoff (Option A)
 
