@@ -70,9 +70,40 @@ public final class EdgeResolver implements AutoCloseable {
      */
     public static final String UNRESOLVED_SUFFIX = "~UNRESOLVED";
 
-    // Tier-2 session state.
-    private final Set<Integer> warmFiles = new HashSet<>();
+    // Tier-2 session state. A file's resolution is accumulated per file in a FileSlice, because
+    // store.applyEdit REPLACES the file's whole overlay slice — so writing name X's edges then later
+    // name Y's would wipe X's. The slice holds the Tier-1 base + the union of every resolved layer
+    // (per-name value edges + the once-per-file structural edges) and is re-applied as that union.
+    private final Map<Integer, FileSlice> slices = new HashMap<>();
     private final Map<Path, List<String>> lineCache = new HashMap<>();
+
+    /**
+     * Per-file Tier-2 accumulation (the cache unit is now {@code (file, name)} for value edges, and
+     * {@code file} for the name-independent structural layer). {@code names} records which value-name
+     * layers are resolved; {@code structural} whether the type/annotation + hierarchy layer is. The
+     * applied {@link FileIndex} is the union of {@link #base} (Tier-1) + {@link #valueEdges} (all
+     * resolved names) + {@link #structuralEdges}.
+     */
+    private static final class FileSlice {
+        final List<Symbol> symbols;           // Tier-1 declarations
+        final List<MonikerEdge> base;         // Tier-1 structural edges (e.g. CONTAINS)
+        final Set<String> names = new HashSet<>();              // value-name layers resolved
+        final List<MonikerEdge> valueEdges = new ArrayList<>(); // accumulated across names
+        boolean structural;                   // type/annotation refs + hierarchy resolved (once/file)
+        final List<MonikerEdge> structuralEdges = new ArrayList<>();
+
+        FileSlice(List<Symbol> symbols, List<MonikerEdge> base) {
+            this.symbols = symbols;
+            this.base = base;
+        }
+
+        FileIndex toIndex(int fid) {
+            List<MonikerEdge> all = new ArrayList<>(base);
+            all.addAll(valueEdges);
+            all.addAll(structuralEdges);
+            return new FileIndex(fid, symbols, all);
+        }
+    }
 
     private EdgeResolver(LsmStore store, UsageNameIndex usageIndex, FileTable fileTable,
             AnalysisEngine engine, Indexer indexer, Path repoRoot, Metrics metrics) {
@@ -175,14 +206,16 @@ public final class EdgeResolver implements AutoCloseable {
     }
 
     /**
-     * Resolve every not-yet-warm candidate file for {@code simpleName}: write all its resolved edges
-     * into the graph and bucket all its misses by target name (so the unconfirmed tail is complete for
-     * any name, regardless of query order). Already-warm files are skipped — the cache property.
+     * Resolve every candidate file for {@code simpleName} (Option A — name-scoped). For each, resolve
+     * the per-(file,name) <b>value layer</b> (the queried name's calls/reads — the cubic-cost class,
+     * bucketing its misses onto the {@code name~UNRESOLVED} placeholder) and the once-per-file
+     * <b>structural layer</b> (type/annotation refs + hierarchy). The cache unit is now {@code (file,
+     * name)} for the value layer and {@code file} for the structural layer — a same-name repeat
+     * re-resolves nothing.
      *
-     * <p>The candidate set is {@link UsageNameIndex#candidateFiles} — an <b>exact</b> simple-name match
-     * (vs. the old substring prune), so fewer files are wastefully resolved. Correctness holds: every
-     * true use-site records the exact simple name, so exact match never drops one; substring only ever
-     * over-matched.
+     * <p>The candidate set is {@link UsageNameIndex#candidateFiles} — an <b>exact</b> simple-name match,
+     * so every true use-site of {@code simpleName} is in a candidate file, and the per-name tail is
+     * complete for {@code simpleName}.
      */
     private void ensureResolved(String simpleName) {
         if (usageIndex == null) {
@@ -194,53 +227,80 @@ public final class EdgeResolver implements AutoCloseable {
             if (Thread.currentThread().isInterrupted()) {
                 throw new java.util.concurrent.CancellationException("find_references cancelled");
             }
-            if (!warmFiles.add(fid)) {
-                continue; // already resolved in this session
-            }
-            Path path = absPathOf(fid);
-            if (path == null || !Files.isRegularFile(path)) {
-                continue;
-            }
-            try {
-                resolveFile(fid, path);
-                metrics.counter("resolve.files").add(1);
-            } catch (IOException skip) {
-                // parse failure: leave the file warm (it cannot resolve), surface nothing
-            }
+            warmForReferences(fid, simpleName);
         }
     }
 
-    /** Resolve one file's occurrences, cache its edges + misses, and write the edges into the store. */
-    private void resolveFile(int fid, Path path) throws IOException {
-        ParsedUnit unit = engine.parse(path);
-        List<ResolvedOccurrence> occurrences = engine.resolveOccurrences(unit);
-        FileIndex tier1 = indexer.indexFile(fid, path, sourceSetOf(fid));
-        List<MonikerEdge> edges = new ArrayList<>(tier1.edges());
-        for (ResolvedOccurrence o : occurrences) {
-            String enclosing = enclosingMoniker(fid, o.startLine(), o.startCol());
-            if (enclosing == null) {
-                continue;
-            }
-            Range range = new Range(o.startLine(), o.startCol(), o.endLine(), o.endCol());
-            if (o.isResolved()) {
-                String dst = targetMoniker(o.target());
-                if (dst != null) {
-                    Occurrence occ = new Occurrence(fid, range, -1, roleOf(o.kind()));
-                    edges.add(new MonikerEdge(enclosing, dst, edgeTypeOf(o.kind()), occ));
-                }
-            } else if (o.targetName() != null) {
-                // Unconfirmed reference (task-11b): a faithful syntactic edge to the name-keyed
-                // placeholder. The Cause ordinal rides the occurrence's otherwise-unused enclosing
-                // slot (a reference edge keeps its enclosing decl as the edge src, not here).
-                Occurrence occ = new Occurrence(fid, range,
-                        causeSlot(FailureClassifier.classify(o.failure())), roleOf(o.kind()));
-                edges.add(new MonikerEdge(enclosing, o.targetName() + UNRESOLVED_SUFFIX,
-                        edgeTypeOf(o.kind()), occ));
-            }
+    /**
+     * Warm {@code fid} for a {@code find_references(simpleName)} query: resolve the value layer for
+     * {@code simpleName} and the structural layer (each at most once), accumulating into the file's
+     * slice and re-applying the union. Both layers share one {@code engine.parse} when both are needed.
+     */
+    private void warmForReferences(int fid, String simpleName) {
+        Path path = absPathOf(fid);
+        if (path == null || !Files.isRegularFile(path)) {
+            return;
         }
-        // Structural hierarchy (task-11a): EXTENDS/IMPLEMENTS from a type, OVERRIDES from a method.
+        try {
+            FileSlice slice = sliceFor(fid, path);
+            boolean needValue = !slice.names.contains(simpleName);
+            boolean needStructural = !slice.structural;
+            if (!needValue && !needStructural) {
+                return; // (file, name) value layer + structural layer both cached
+            }
+            ParsedUnit unit = engine.parse(path);
+            if (needStructural) {
+                resolveStructuralInto(slice, fid, unit);
+            }
+            if (needValue) {
+                resolveValueInto(slice, fid, unit, simpleName);
+            }
+            store.applyEdit(slice.toIndex(fid));
+            metrics.counter("resolve.files").add(1);
+        } catch (IOException skip) {
+            // parse failure: leave whatever is cached (it cannot resolve), surface nothing
+        }
+    }
+
+    /** The file's slice, building its Tier-1 base (symbols + structural edges) on first touch. */
+    private FileSlice sliceFor(int fid, Path path) throws IOException {
+        FileSlice slice = slices.get(fid);
+        if (slice == null) {
+            FileIndex tier1 = indexer.indexFile(fid, path, sourceSetOf(fid));
+            slice = new FileSlice(tier1.symbols(), new ArrayList<>(tier1.edges()));
+            slices.put(fid, slice);
+        }
+        return slice;
+    }
+
+    /**
+     * Resolve the value layer for {@code simpleName} into {@code slice} (the cubic-cost class, scoped to
+     * the queried name). Marks the name resolved even on a zero-edge result, so a repeat is a no-op.
+     */
+    private void resolveValueInto(FileSlice slice, int fid, ParsedUnit unit, String simpleName) {
+        slice.names.add(simpleName);
+        for (ResolvedOccurrence o : engine.resolveOccurrences(unit, simpleName)) {
+            // Observability (perf gate): every occurrence here was a value-name .resolve() — the
+            // cubic-cost class. resolve.values isolates it; resolve.occurrences is the all-kinds total.
+            metrics.counter("resolve.occurrences").add(1);
+            metrics.counter("resolve.values").add(1);
+            addOccurrenceEdge(fid, o, slice.valueEdges);
+        }
+    }
+
+    /**
+     * Resolve the once-per-file structural layer into {@code slice}: the type/annotation references
+     * (the cheap, name-independent dependency layer the cascade walks) and the hierarchy edges (task-11a
+     * EXTENDS/IMPLEMENTS from a type, OVERRIDES from a method). Marks {@code structural} resolved.
+     */
+    private void resolveStructuralInto(FileSlice slice, int fid, ParsedUnit unit) {
+        slice.structural = true;
+        for (ResolvedOccurrence o : engine.resolveTypeReferences(unit)) {
+            metrics.counter("resolve.occurrences").add(1);
+            addOccurrenceEdge(fid, o, slice.structuralEdges);
+        }
         // src = the enclosing declaration's moniker (its name position); dst = the supertype/overridden
-        // member, or a phantom for external (jar/JDK) targets. Persisted in the same idempotent edit.
+        // member, or a phantom for external (jar/JDK) targets.
         for (ResolvedHierarchy h : engine.resolveHierarchy(unit)) {
             String src = enclosingMoniker(fid, h.srcLine(), h.srcCol());
             if (src == null) {
@@ -248,10 +308,34 @@ public final class EdgeResolver implements AutoCloseable {
             }
             String dst = targetMoniker(h.target());
             if (dst != null) {
-                edges.add(new MonikerEdge(src, dst, hierarchyEdgeType(h.kind()), Occurrence.NONE));
+                slice.structuralEdges.add(new MonikerEdge(src, dst, hierarchyEdgeType(h.kind()), Occurrence.NONE));
             }
         }
-        store.applyEdit(new FileIndex(fid, tier1.symbols(), edges));
+    }
+
+    /**
+     * Append the edge for one resolved occurrence to {@code into}: a confirmed edge to the target's
+     * moniker, or — for a safe-degrading miss (task-11b) — a faithful syntactic edge to the name-keyed
+     * placeholder {@code <name>~UNRESOLVED} (the Cause ordinal rides the occurrence's enclosing slot).
+     */
+    private void addOccurrenceEdge(int fid, ResolvedOccurrence o, List<MonikerEdge> into) {
+        String enclosing = enclosingMoniker(fid, o.startLine(), o.startCol());
+        if (enclosing == null) {
+            return;
+        }
+        Range range = new Range(o.startLine(), o.startCol(), o.endLine(), o.endCol());
+        if (o.isResolved()) {
+            String dst = targetMoniker(o.target());
+            if (dst != null) {
+                into.add(new MonikerEdge(enclosing, dst, edgeTypeOf(o.kind()),
+                        new Occurrence(fid, range, -1, roleOf(o.kind()))));
+            }
+        } else if (o.targetName() != null) {
+            Occurrence occ = new Occurrence(fid, range,
+                    causeSlot(FailureClassifier.classify(o.failure())), roleOf(o.kind()));
+            into.add(new MonikerEdge(enclosing, o.targetName() + UNRESOLVED_SUFFIX,
+                    edgeTypeOf(o.kind()), occ));
+        }
     }
 
     // ------------------------------------------------------------------ type hierarchy
@@ -276,15 +360,25 @@ public final class EdgeResolver implements AutoCloseable {
         return hierarchyEdges(store.rev(target.moniker()));
     }
 
-    /** Resolve {@code target}'s own file (its outgoing hierarchy) + its name candidates (the incoming). */
+    /**
+     * Resolve the <b>structural layer</b> of {@code target}'s own file (its outgoing hierarchy) and of
+     * every candidate file for {@code target.name()} (the incoming hierarchy: a subtype names its
+     * supertype, so it is a candidate). Hierarchy is name-independent, so this resolves <em>only</em>
+     * the structural layer — it does not drag in the value-name resolution {@code find_references} needs
+     * (and vice-versa).
+     */
     private void ensureHierarchyResolved(Symbol target) {
-        ensureFileResolved(target.fileId());
-        ensureResolved(target.name());
+        warmStructural(target.fileId());
+        if (usageIndex != null) {
+            for (int fid : usageIndex.candidateFiles(target.name())) {
+                warmStructural(fid);
+            }
+        }
     }
 
-    /** Resolve a single file by id if not already warm (used for a type's own outgoing hierarchy edges). */
-    private void ensureFileResolved(int fid) {
-        if (fid < 0 || !warmFiles.add(fid)) {
+    /** Resolve a single file's structural layer (type/annotation refs + hierarchy) if not already done. */
+    private void warmStructural(int fid) {
+        if (fid < 0) {
             return;
         }
         Path path = absPathOf(fid);
@@ -292,10 +386,15 @@ public final class EdgeResolver implements AutoCloseable {
             return;
         }
         try {
-            resolveFile(fid, path);
+            FileSlice slice = sliceFor(fid, path);
+            if (slice.structural) {
+                return;
+            }
+            resolveStructuralInto(slice, fid, engine.parse(path));
+            store.applyEdit(slice.toIndex(fid));
             metrics.counter("resolve.files").add(1);
         } catch (IOException skip) {
-            // parse failure: leave the file warm (it cannot resolve), surface nothing
+            // parse failure: cannot resolve, surface nothing
         }
     }
 
@@ -344,27 +443,38 @@ public final class EdgeResolver implements AutoCloseable {
     }
 
     /**
-     * Eagerly (re-)resolve {@code fileId} into the graph — the changed file is resolved as part of the
-     * cascade so a new hierarchy edge becomes visible for the diff. Leaves the file <b>warm</b>.
+     * Eagerly (re-)resolve {@code fileId} into the graph from current bytes — the changed file is
+     * resolved as part of the cascade so its new structural edges (hierarchy + type refs) become
+     * visible for the diff. <b>Always</b> resolves the structural layer (even if the file was never
+     * warm — a freshly-edited supertype must surface its new EXTENDS edge), and re-resolves the value
+     * layer for every name previously warm for the file. Discards the old slice first, so stale edges
+     * are not carried. Leaves the file <b>warm</b>.
      */
     public void reResolve(int fileId) {
-        warmFiles.add(fileId);
+        FileSlice old = slices.remove(fileId);
+        Set<String> names = old == null ? Set.of() : new HashSet<>(old.names);
         Path path = absPathOf(fileId);
         if (path == null || !Files.isRegularFile(path)) {
             return;
         }
         try {
-            resolveFile(fileId, path);
+            FileSlice slice = sliceFor(fileId, path);
+            ParsedUnit unit = engine.parse(path);
+            resolveStructuralInto(slice, fileId, unit);
+            for (String name : names) {
+                resolveValueInto(slice, fileId, unit, name);
+            }
+            store.applyEdit(slice.toIndex(fileId));
             metrics.counter("resolve.files").add(1);
         } catch (IOException skip) {
-            // parse failure: leave the file warm (it cannot resolve), surface nothing
+            // parse failure: leave the (empty) slice (it cannot resolve), surface nothing
         }
     }
 
     /**
-     * Return {@code fileId} to <b>unresolved</b>: re-apply its Tier-1-only slice (dropping its resolved
-     * Tier-2 edges, including any now-stale binding) and clear its warm status, so the next query that
-     * touches it re-resolves it lazily.
+     * Return {@code fileId} to <b>unresolved</b>: re-apply its Tier-1-only slice (dropping all its
+     * resolved Tier-2 edges — every {@code (file, *)} value layer and the structural layer, including
+     * any now-stale binding) and drop its slice, so the next query that touches it re-resolves lazily.
      */
     public void dropTier2(int fileId) throws IOException {
         Path path = absPathOf(fileId);
@@ -373,7 +483,7 @@ public final class EdgeResolver implements AutoCloseable {
         }
         store.applyEdit(indexer.indexFile(fileId, path, sourceSetOf(fileId)));
         refreshSymbols(fileId);
-        warmFiles.remove(fileId);
+        slices.remove(fileId);
     }
 
     /**
@@ -381,8 +491,9 @@ public final class EdgeResolver implements AutoCloseable {
      * unresolved (M1 task-11c). For each changed moniker, {@code rev(moniker)} gives the confirmed
      * referrers (excluding the structural {@code CONTAINS} edge); for each changed simple name,
      * {@code rev(name~UNRESOLVED)} gives the unconfirmed referrers (so a newly-defined name re-binds).
-     * Only files <b>warm</b> in this session are dropped (a non-warm referrer re-resolves lazily on
-     * first touch anyway); {@code exclude} skips the just-re-resolved changed files. Returns the set of
+     * Only files <b>warm</b> in this session are dropped (any {@code (file, *)} layer warm counts — a
+     * non-warm referrer re-resolves lazily on first touch anyway); {@code exclude} skips the
+     * just-re-resolved changed files. Returns the set of
      * referrer files actually returned to unresolved.
      */
     public Set<Path> invalidateReferrers(Set<String> changedMonikers, Set<String> changedNames,
@@ -404,7 +515,7 @@ public final class EdgeResolver implements AutoCloseable {
 
         Set<Path> files = new HashSet<>();
         for (int fid : referrers) {
-            if (fid < 0 || !warmFiles.contains(fid)) {
+            if (fid < 0 || !slices.containsKey(fid)) {
                 continue; // not cached this session → lazy re-resolution will redo it correctly
             }
             dropTier2(fid);

@@ -217,12 +217,34 @@ public final class JavaParserEngine implements AnalysisEngine {
     }
 
     @Override
-    public List<ResolvedOccurrence> resolveOccurrences(ParsedUnit unit) {
+    public List<ResolvedOccurrence> resolveOccurrences(ParsedUnit unit, String simpleName) {
         List<ResolvedOccurrence> out = new ArrayList<>();
         for (Occurrences.Occ o : Occurrences.scan(unit.cu())) {
-            out.add(attempt(o));
+            // Name-scope before .resolve(): only the queried name's value use-sites pay the cubic cost.
+            if (isValueKind(o.kind()) && o.targetName().equals(simpleName)) {
+                out.add(attempt(o));
+            }
         }
         return out;
+    }
+
+    @Override
+    public List<ResolvedOccurrence> resolveTypeReferences(ParsedUnit unit) {
+        List<ResolvedOccurrence> out = new ArrayList<>();
+        for (Occurrences.Occ o : Occurrences.scan(unit.cu())) {
+            if (o.kind() == OccurrenceKind.TYPE_REF || o.kind() == OccurrenceKind.ANNOTATION) {
+                out.add(attempt(o));
+            }
+        }
+        return out;
+    }
+
+    /** The cubic-cost value-name kinds (vs the cheap type-solver kinds {@code TYPE_REF}/{@code ANNOTATION}). */
+    private static boolean isValueKind(OccurrenceKind kind) {
+        return switch (kind) {
+            case CALL, NAME, FIELD_ACCESS, METHOD_REF, INSTANTIATION -> true;
+            case TYPE_REF, ANNOTATION -> false;
+        };
     }
 
     /** Resolve one enumerated use-site; never throws (guards {@code Throwable}, incl. StackOverflow). */

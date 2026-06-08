@@ -30,13 +30,25 @@ public interface AnalysisEngine {
     Optional<ResolvedType> resolveType(ParsedUnit unit, Position pos);
 
     /**
-     * Resolve <em>every</em> use-site in {@code unit} (the seven occurrence categories) — the Tier-2
-     * lazy-resolve unit (PRD §5.1). Each resolution is guarded (incl. {@code StackOverflowError});
-     * a use-site that resolves carries a {@link ResolvedTarget}, one that does not carries a
-     * safe-degrading {@link ResolveFailure} — never a guessed answer. The list is the input to the
-     * resolved-edge cache + the unconfirmed tail.
+     * Resolve the <b>value-name</b> use-sites in {@code unit} whose simple name equals {@code
+     * simpleName} — the per-(file,name) Tier-2 unit (Option A name-scoping). Value-name resolution
+     * (calls, name/field reads, method refs, instantiations) is the cubic-cost class (JavaParser
+     * #4975's {@code StatementContext} block scan), so scoping to the queried name before {@code
+     * .resolve()} is what avoids resolving thousands of names we never asked about. Each resolution is
+     * guarded (incl. {@code StackOverflowError}); a use-site that resolves carries a {@link
+     * ResolvedTarget}, one that does not a safe-degrading {@link ResolveFailure}. The list feeds the
+     * confirmed edges + the unconfirmed tail <em>for that name</em>.
      */
-    List<ResolvedOccurrence> resolveOccurrences(ParsedUnit unit);
+    List<ResolvedOccurrence> resolveOccurrences(ParsedUnit unit, String simpleName);
+
+    /**
+     * Resolve every <b>type/annotation</b> use-site in {@code unit} (the name-independent structural
+     * layer). These resolve through the type solver, <em>not</em> the cubic {@code StatementContext}
+     * walk, so they are cheap and resolved once per file regardless of the queried name. They are the
+     * per-file dependency layer the node-diff cascade walks (task-11c): a referrer's {@code REFERENCES}
+     * edge to a type is how a change to that type finds its referrers. Each resolution is guarded.
+     */
+    List<ResolvedOccurrence> resolveTypeReferences(ParsedUnit unit);
 
     /**
      * Resolve the <em>structural hierarchy</em> of every declaration in {@code unit} (task-11a): for
