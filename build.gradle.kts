@@ -57,6 +57,7 @@ val jdkIndexerJar by tasks.registering(Jar::class) {
 
 dependencies {
     implementation("com.github.javaparser:javaparser-symbol-solver-core:3.28.2")
+    implementation("org.jline:jline:3.27.1")
 
     testImplementation(platform("org.junit:junit-bom:5.11.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")

@@ -15,15 +15,18 @@ import jcma.workspace.FreshnessSource;
 import jcma.workspace.TreeScanSource;
 import jcma.workspace.Workspace;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.io.PrintStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
+
+import org.jline.reader.LineReader;
+import org.jline.reader.LineReaderBuilder;
+import org.jline.reader.impl.history.DefaultHistory;
+import org.jline.terminal.Terminal;
+import org.jline.terminal.TerminalBuilder;
 
 /**
  * {@code jcma repl <repo>} (M1 task-11c; time-boxed in task-12) — a tiny long-running query loop over a
@@ -52,12 +55,17 @@ final class Repl {
         Workspace workspace = Workspace.discover(repo);
         FreshnessSource source = new TreeScanSource(workspace.sourceRoots());
         try (QueryService svc = new QueryService(AnalysisSession.open(indexDir, workspace, source, Metrics.noop()));
-                BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
+                Terminal terminal = TerminalBuilder.terminal()) {
             out.println("jcma repl — commands: refs <symbol> | def <symbol> | def <file> <line:col> "
                     + "| supertypes <symbol> | quit   (any query takes an optional --deadline <ms>)");
-            prompt(out);
+
+            LineReader reader = LineReaderBuilder.builder()
+                    .terminal(terminal)
+                    .history(new DefaultHistory())
+                    .build();
+
             String line;
-            while ((line = in.readLine()) != null) {
+            while ((line = reader.readLine("jcma> ")) != null) {
                 String trimmed = line.trim();
                 if (trimmed.equals("quit") || trimmed.equals("exit")) {
                     break;
@@ -74,7 +82,6 @@ final class Repl {
                         }
                     }
                 }
-                prompt(out);
             }
             return 0;
         } catch (Exception e) {
@@ -122,7 +129,8 @@ final class Repl {
                     err.println("usage: def <symbol>  |  def <file> <line:col>  [--deadline <ms>]");
                 }
             }
-            default -> err.println("unknown command '" + cmd[0] + "' — try: refs | def | supertypes | quit");
+            case "help" -> printHelp(out);
+            default -> err.println("unknown command '" + cmd[0] + "' — try: help | refs | def | supertypes | quit | exit");
         }
     }
 
@@ -137,6 +145,52 @@ final class Repl {
         for (Symbol target : targets) {
             action.accept(target);
         }
+    }
+
+    private static void printHelp(PrintStream out) {
+        out.println("""
+                jcma repl — interactive query loop over a warm AnalysisSession
+
+                Commands:
+                  refs <symbol>
+                    Find all references to a declaration. <symbol> is a simple
+                    (unqualified) name, e.g. a method name, class name, or field name.
+                    If multiple declarations share the same name, results for each are printed.
+                    Examples:
+                      refs run
+                      refs Service
+                      refs execute --deadline 500
+
+                  def <symbol>
+                    Find the definition of a declaration by its simple name.
+                    Examples:
+                      def run
+                      def getProperty
+                      def Base --deadline 2s
+
+                  def <file> <line:col>
+                    Find the definition at a specific use-site position. <file> is a
+                    path relative to the repo root. <line:col> is 1-based.
+                    Example:
+                      def src/main/java/Client.java 7:24
+
+                  supertypes <symbol>
+                    Print supertype/subtype edges in both directions (EXTENDS, IMPLEMENTS,
+                    OVERRIDES), showing what a type inherits from and what inherits from it.
+                    Examples:
+                      supertypes Base
+                      supertypes ArrayList
+
+                  help                        print this message
+                  quit | exit                 exit the REPL
+
+                Every query command accepts an optional --deadline <ms> time-box.
+                Deadlines accept bare milliseconds (2000), ms suffix (2000ms), or
+                s suffix (3s). The default is 30 seconds.
+
+                The session keeps the Tier-2 edge cache alive across queries, so
+                repeated lookups are fast. Out-of-band file edits are detected and
+                re-indexed before the next query.""");
     }
 
     private static void printRefs(PrintStream out, References refs) {
@@ -187,11 +241,6 @@ final class Repl {
         } catch (NumberFormatException e) {
             return null;
         }
-    }
-
-    private static void prompt(PrintStream out) {
-        out.print("jcma> ");
-        out.flush();
     }
 
     /** A query action that may throw (the session's query methods declare {@code IOException}). */
