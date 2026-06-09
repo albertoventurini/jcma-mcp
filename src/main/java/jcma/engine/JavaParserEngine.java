@@ -11,6 +11,7 @@ import com.github.javaparser.ast.body.RecordDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.expr.AnnotationExpr;
+import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.InstanceOfExpr;
 import com.github.javaparser.ast.expr.LambdaExpr;
@@ -256,11 +257,14 @@ public final class JavaParserEngine implements AnalysisEngine {
     /** Resolve one enumerated use-site; never throws (guards {@code Throwable}, incl. StackOverflow). */
     private ResolvedOccurrence attempt(Occurrences.Occ o) {
         try {
-            // NAME is the one syntactically *ambiguous* use-site (JLS §6.5): resolved as an ambiguous
-            // name — a value, else a type — by decision. Every other kind denotes one committed thing.
-            ResolvedTarget target = o.kind() == OccurrenceKind.NAME
-                    ? resolveAmbiguousName((NameExpr) o.node())
-                    : describe(resolveCommitted(o));
+            // NAME / FIELD_ACCESS are the syntactically *ambiguous* use-sites (JLS §6.5): a bare or
+            // qualified name resolved as an ambiguous name — a value, else a type — by decision. Every
+            // other kind denotes one committed thing.
+            ResolvedTarget target = switch (o.kind()) {
+                case NAME         -> resolveAmbiguousName((NameExpr) o.node());
+                case FIELD_ACCESS -> resolveAmbiguousName((FieldAccessExpr) o.node());
+                default           -> describe(resolveCommitted(o));
+            };
             return target != null
                     ? resolved(o, target)
                     : unresolved(o, unsolvedName(o.node(), o.targetName()));
@@ -279,34 +283,71 @@ public final class JavaParserEngine implements AnalysisEngine {
         return switch (o.kind()) {
             case CALL          -> ((MethodCallExpr) o.node()).resolve();
             case INSTANTIATION -> ((ObjectCreationExpr) o.node()).resolve();
-            case FIELD_ACCESS  -> ((FieldAccessExpr) o.node()).resolve();
             case METHOD_REF    -> ((MethodReferenceExpr) o.node()).resolve();
             case TYPE_REF      -> ((ClassOrInterfaceType) o.node()).resolve();
             case ANNOTATION    -> ((AnnotationExpr) o.node()).resolve();
-            case NAME          -> throw new IllegalStateException("NAME resolves as an ambiguous name");
+            case NAME, FIELD_ACCESS ->
+                    throw new IllegalStateException(o.kind() + " resolves as an ambiguous name");
         };
     }
 
     /**
-     * Resolve an <b>ambiguous name</b> (JLS §6.5): a bare {@link NameExpr} denotes a <em>value</em> if
-     * one is in scope, else a <em>type</em> (e.g. the qualifier of a static access {@code Foo.bar()} /
-     * {@code Foo.FIELD}), else a package (which we do not track). The choice is a decision over the
-     * non-throwing {@code isSolved()} API — a type qualifier is a first-class outcome, not a
-     * value-resolution failure recovered from a {@code catch}. Returns {@code null} when the name
-     * denotes neither a value nor a type in scope (a genuine miss).
+     * Resolve an <b>ambiguous name</b> (JLS §6.5): a name denotes a <em>value</em> if one is in scope,
+     * else a <em>type</em>, else a package (which we do not track). The two ambiguous syntactic shapes:
+     * <ul>
+     *   <li>a bare {@link NameExpr} — e.g. {@code Foo} in {@code Foo.bar()} / {@code Foo.FIELD};</li>
+     *   <li>a <em>qualified</em> {@link FieldAccessExpr} (JLS §6.5.2) — e.g. {@code Outer.Inner} in
+     *       {@code Outer.Inner.staticCall()}, a nested-type reference.</li>
+     * </ul>
+     * The choice is a decision over the non-throwing {@code isSolved()} API — a type qualifier is a
+     * first-class outcome, not a value-resolution failure recovered from a {@code catch}.
      */
     private ResolvedTarget resolveAmbiguousName(NameExpr name) {
-        SymbolReference<? extends ResolvedValueDeclaration> asValue =
-                JavaParserFacade.get(typeSolver).solve(name);
+        // A bare name is always a type candidate (its simple name).
+        return ambiguous(name, JavaParserFacade.get(typeSolver).solve(name), name.getNameAsString());
+    }
+
+    private ResolvedTarget resolveAmbiguousName(FieldAccessExpr name) {
+        // A field access is a type candidate only when it is a pure name path (Outer.Inner); a real
+        // field access (obj.field, foo().bar, this.x) gets typeName == null → value-only resolution.
+        return ambiguous(name, JavaParserFacade.get(typeSolver).solve(name),
+                isQualifiedName(name) ? qualifiedName(name) : null);
+    }
+
+    /**
+     * The shared ambiguous-name decision: value first, then type. {@code typeName} is the dotted name to
+     * try as a type ({@code null} when the node cannot denote a type — a real field access).
+     * {@code solveType} handles dotted names like {@code "Outer.Inner"} via recursive contexts. Returns
+     * {@code null} when the name denotes neither a value nor a type in scope (a genuine miss).
+     */
+    private ResolvedTarget ambiguous(Expression node,
+            SymbolReference<? extends ResolvedValueDeclaration> asValue, String typeName) {
         if (asValue.isSolved()) {
             return describe(asValue.getCorrespondingDeclaration());
         }
-        SymbolReference<ResolvedTypeDeclaration> asType =
-                JavaParserFactory.getContext(name, typeSolver).solveType(name.getNameAsString(), List.of());
-        if (asType.isSolved()) {
-            return describe(asType.getCorrespondingDeclaration());
+        if (typeName == null) {
+            return null;
         }
-        return null;
+        SymbolReference<ResolvedTypeDeclaration> asType =
+                JavaParserFactory.getContext(node, typeSolver).solveType(typeName, List.of());
+        return asType.isSolved() ? describe(asType.getCorrespondingDeclaration()) : null;
+    }
+
+    /** A pure name path (a {@link NameExpr}, or a field-access chain of names) — the only shape that can denote a type. */
+    private static boolean isQualifiedName(Expression e) {
+        if (e.isNameExpr()) {
+            return true;
+        }
+        return e.isFieldAccessExpr() && isQualifiedName(e.asFieldAccessExpr().getScope());
+    }
+
+    /** The dotted name of a pure name-path field access, e.g. {@code Outer.Inner}. */
+    private static String qualifiedName(FieldAccessExpr fae) {
+        Expression s = fae.getScope();
+        String prefix = s.isFieldAccessExpr()
+                ? qualifiedName(s.asFieldAccessExpr())
+                : s.asNameExpr().getNameAsString();
+        return prefix + "." + fae.getNameAsString();
     }
 
     private ResolvedOccurrence resolved(Occurrences.Occ o, ResolvedTarget target) {
