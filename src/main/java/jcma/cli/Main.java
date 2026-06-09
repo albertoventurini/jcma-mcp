@@ -19,8 +19,8 @@ import java.util.Optional;
  */
 public final class Main {
 
-    /** Bumped manually; surfaced by {@code jcma version} and the native smoke. */
-    static final String VERSION = "0.1.0-SNAPSHOT";
+    /** Bumped manually; surfaced by {@code jcma version}, the MCP {@code serverInfo}, and the native smoke. */
+    public static final String VERSION = "0.1.0-SNAPSHOT";
 
     private Main() {}
 
@@ -78,6 +78,9 @@ public final class Main {
             }
             case "repl" -> {
                 return Repl.run(args, out, err);
+            }
+            case "serve" -> {
+                return Serve.run(args, out, err);
             }
             default -> {
                 err.println("jcma: unknown subcommand '" + cmd + "'");
@@ -183,6 +186,8 @@ public final class Main {
                   repl <repo>          long-running query loop over one live session (warm edge
                                        cache + live node-diff cascade on out-of-band edits);
                                        each query takes an optional --deadline <ms>
+                  serve <repo>         run the MCP (JSON-RPC over stdio) server; the handshake
+                                       answers instantly, the index is built on the first tool call
 
                   --deadline <ms>      time-box a query (e.g. 200, 200ms, 2s); on expiry the query
                                        is cancelled and reported as timed out (no partial result)

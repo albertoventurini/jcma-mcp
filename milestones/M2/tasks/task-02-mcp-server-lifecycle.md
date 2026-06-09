@@ -53,8 +53,16 @@ Write failing tests + transcripts → **STOP for review** → implement → veri
 - tests green · native green (native MCP smoke: pipe `initialize`+`tools/list` to the binary) ·
   handshake never blocks on indexing · first `tools/call` is served against a fresh index.
 
-## Decisions to settle / record
-- **Missing-index UX** — synchronous build with a stderr note (recommended) vs. an `isError` "indexing"
-  result the agent retries. Record the chosen behavior.
-- **`initialize` protocolVersion** to advertise (pin the current MCP spec date the spike used unless
-  Claude Code negotiates otherwise) — record it.
+## Decisions recorded (settled with the user 2026-06-09; implemented)
+- **Missing-index UX** = **synchronous build, lazy on the first `tools/call`, with a one-time stderr
+  note.** `initialize`/`tools/list` answer instantly with no session and never build the index. The
+  build (`Reconciler.reindex`, which subsumes cold-build and warm-reconcile) fires once, guarded,
+  at the start of the first `tools/call`. Stderr note: cold → `jcma: indexing <repo> …` then
+  `jcma: indexed N file(s), M symbols`; warm → `jcma: index up to date`. No `isError` "retry"
+  dance. Background indexing stays deferred to M3.
+- **`initialize` protocolVersion** = **echo the client's, default `2024-11-05`.** Read
+  `params.protocolVersion` and echo it back (spec-correct negotiation; our surface uses no
+  version-specific features); when absent, advertise the spike's pinned `2024-11-05`.
+- **Tool failure ≠ transport error** — a failing tool returns a successful `result` with
+  `isError:true`; only transport/protocol faults use JSON-RPC `error` codes (`-32700/-32600/
+  -32601/-32602`).
