@@ -110,7 +110,7 @@ class HierarchyEdgesTest {
 
     /** Trigger Tier-2 resolution of the subtype files via the {@code Base}/{@code Iface} simple names. */
     private static void warm(Path indexDir) throws Exception {
-        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.discover(HIER), Metrics.create())) {
+        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.ofSourceRoot(HIER), Metrics.create())) {
             for (Symbol s : resolver.declarations("Base")) {
                 resolver.findReferences(s);
             }

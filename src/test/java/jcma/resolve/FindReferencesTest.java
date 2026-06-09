@@ -34,7 +34,7 @@ class FindReferencesTest {
     @Test
     void groupsConfirmedRefsByEnclosingSymbolWithCounts(@TempDir Path indexDir) throws Exception {
         index(REFS, indexDir);
-        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.discover(REFS), Metrics.create())) {
+        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.ofSourceRoot(REFS), Metrics.create())) {
             References refs = resolver.findReferences(target(resolver));
 
             assertEquals(3, refs.totalRefs(), "ClientA.go + ClientB.first + ClientB.second");
@@ -48,7 +48,7 @@ class FindReferencesTest {
     @Test
     void surfacesUnconfirmedTailForAnUnresolvableCandidate(@TempDir Path indexDir) throws Exception {
         index(REFS, indexDir);
-        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.discover(REFS), Metrics.create())) {
+        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.ofSourceRoot(REFS), Metrics.create())) {
             References refs = resolver.findReferences(target(resolver));
 
             assertTrue(refs.hasUnconfirmedTail(), "Mystery.poke's thing.run() cannot be ruled in or out");
@@ -66,7 +66,7 @@ class FindReferencesTest {
     void secondQueryIsPureCacheLookupNoReResolve(@TempDir Path indexDir) throws Exception {
         index(REFS, indexDir);
         Metrics metrics = Metrics.create();
-        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.discover(REFS), metrics)) {
+        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.ofSourceRoot(REFS), metrics)) {
             resolver.findReferences(target(resolver));
             long afterFirst = metrics.counter("resolve.files").sum();
             assertTrue(afterFirst > 0, "the first query resolves candidate files");

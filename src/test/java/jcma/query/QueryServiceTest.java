@@ -75,7 +75,7 @@ class QueryServiceTest {
     // ------------------------------------------------------------------ helpers
 
     private static QueryService open(Path indexDir) throws Exception {
-        return new QueryService(AnalysisSession.open(indexDir, Workspace.discover(REFS), Metrics.create()));
+        return new QueryService(AnalysisSession.open(indexDir, Workspace.ofSourceRoot(REFS), Metrics.create()));
     }
 
     private static void index(Path repo, Path indexDir) {

@@ -7,6 +7,7 @@ import jcma.index.SourceRoot;
 import jcma.index.SourceSet;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -110,5 +111,48 @@ class WorkspaceTest {
         Path root = FIXTURES.resolve("ws-adhoc");
         assertTrue(Workspace.discoverSourceSets(root).isEmpty(),
                 "no build model and no standard layout → nothing discovered (caller falls back)");
+    }
+
+    // ---------------------------------------------------------------- Gradle root discovery
+
+    @Test
+    void discoverTreatsGradleKtsAsProjectRootAndHonorsCpTxt(@TempDir Path dir) throws Exception {
+        Path jar = gradleProjectWithCpTxt(dir, "build.gradle.kts");
+        Workspace ws = Workspace.discover(dir.resolve("src/main/java/app/App.java"));
+        assertEquals(dir, ws.projectRoot(),
+                "a build.gradle.kts dir is recognized as the project root (no pom required)");
+        assertEquals(List.of(jar), ws.classpathJars(),
+                "the Gradle root's committed cp.txt populates the classpath");
+    }
+
+    @Test
+    void discoverRecognizesGroovyBuildFile(@TempDir Path dir) throws Exception {
+        Path jar = gradleProjectWithCpTxt(dir, "build.gradle");
+        Workspace ws = Workspace.discover(dir.resolve("src/main/java/app/App.java"));
+        assertEquals(List.of(jar), ws.classpathJars(),
+                "build.gradle (Groovy DSL) marks a Gradle root too");
+    }
+
+    @Test
+    void discoverRecognizesSettingsGradleOnly(@TempDir Path dir) throws Exception {
+        Path jar = gradleProjectWithCpTxt(dir, "settings.gradle.kts");
+        Workspace ws = Workspace.discover(dir.resolve("src/main/java/app/App.java"));
+        assertEquals(List.of(jar), ws.classpathJars(),
+                "a settings.gradle.kts (no build.gradle) still marks a Gradle root");
+    }
+
+    /**
+     * Build a minimal Gradle project under {@code dir}: the given build-file marker, a standard
+     * source tree, and a committed {@code cp.txt} referencing one jar. Returns that jar's path. The
+     * committed cp.txt keeps these tests off the live {@code gradle} subprocess (cp.txt wins on
+     * precedence), so they stay deterministic.
+     */
+    private static Path gradleProjectWithCpTxt(Path dir, String marker) throws IOException {
+        Files.writeString(dir.resolve(marker), "// gradle\n");
+        Path src = Files.createDirectories(dir.resolve("src/main/java/app"));
+        Files.writeString(src.resolve("App.java"), "package app;\nclass App {}\n");
+        Path jar = dir.resolve("dep.jar");
+        Files.writeString(dir.resolve("cp.txt"), jar.toString());
+        return jar;
     }
 }

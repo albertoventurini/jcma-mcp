@@ -29,7 +29,7 @@ class FindDefinitionTest {
     @Test
     void bySymbolReturnsTheDeclarationSiteAndSnippet(@TempDir Path indexDir) throws Exception {
         index(REFS, indexDir);
-        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.discover(REFS), Metrics.create())) {
+        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.ofSourceRoot(REFS), Metrics.create())) {
             Symbol run = resolver.declarations("run").stream()
                     .filter(s -> "app/Service#run().".equals(s.moniker()))
                     .findFirst().orElseThrow();
@@ -45,7 +45,7 @@ class FindDefinitionTest {
     @Test
     void byUseSitePositionResolvesToTheTargetDeclaration(@TempDir Path indexDir) throws Exception {
         index(REFS, indexDir);
-        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.discover(REFS), Metrics.create())) {
+        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.ofSourceRoot(REFS), Metrics.create())) {
             // ClientA.java:7  ->  new Service().run();   (cursor inside the run() call)
             Optional<Definition> def =
                     resolver.findDefinitionAt(REFS.resolve("app/ClientA.java"), new Position(7, 24));

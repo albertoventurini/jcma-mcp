@@ -5,6 +5,7 @@ import jcma.index.SourceSet;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -22,11 +23,15 @@ import java.util.regex.Pattern;
  *
  * <p><b>Classpath</b> has three plumbed paths (precedence order): (1) a manual {@code cp.txt} beside
  * the project root, {@link java.io.File#pathSeparator}-split, {@code .jar} entries only (the
- * {@code SolverSetup} read loop); (2) auto-detect via {@code mvn dependency:build-classpath}
- * (subprocess), which writes {@code cp.txt} then re-reads it; (3) the source dirs themselves —
- * which {@code JavaParserTypeSolver} already covers, so no jars are needed for source→source
- * resolution. Automated tests use a committed {@code cp.txt}; the live {@code mvn} path is exercised
- * only by the manual CLI check.
+ * {@code SolverSetup} read loop); (2) auto-detect from the build tool — {@code mvn
+ * dependency:build-classpath} for Maven, or a Gradle {@code --init-script} that prints
+ * {@code testRuntimeClasspath} — each writing {@code cp.txt} then re-reading it; (3) the source dirs
+ * themselves — which {@code JavaParserTypeSolver} already covers, so no jars are needed for
+ * source→source resolution. Automated tests use a committed {@code cp.txt}; the live {@code mvn} /
+ * {@code gradle} subprocess paths are exercised only by the manual CLI check.
+ *
+ * <p>A <b>project root</b> is a dir carrying a Maven {@code pom.xml} or any Gradle build marker
+ * ({@code build.gradle[.kts]} / {@code settings.gradle[.kts]}); {@link #discover} walks up to it.
  */
 public final class Workspace {
 
@@ -42,6 +47,27 @@ public final class Workspace {
     private static final Pattern PACKAGE_DECL =
             Pattern.compile("(?m)^\\s*package\\s+([\\w.]+)\\s*;");
 
+    /**
+     * Gradle init script (Groovy DSL) registering {@code jcmaPrintClasspath} on the root project: it
+     * prints the resolved {@code testRuntimeClasspath} (superset covering main + test deps; falls back
+     * to {@code runtimeClasspath}) as a single {@code File.pathSeparator}-joined line. A non-Java root
+     * (no such configuration) prints nothing, yielding an empty classpath.
+     */
+    private static final String GRADLE_INIT_SCRIPT = """
+            gradle.rootProject {
+                tasks.register('jcmaPrintClasspath') {
+                    doLast {
+                        def cfg = ['testRuntimeClasspath', 'runtimeClasspath']
+                                .collect { configurations.findByName(it) }
+                                .find { it != null }
+                        if (cfg != null) {
+                            println cfg.files.collect { it.absolutePath }.join(File.pathSeparator)
+                        }
+                    }
+                }
+            }
+            """;
+
     private final Path projectRoot;
     private final List<Path> sourceRoots;
     private final List<Path> classpathJars;
@@ -54,10 +80,22 @@ public final class Workspace {
     }
 
     /**
-     * Walk up from an arbitrary file to the enclosing project root (pom.xml) and build a workspace.
-     * The target file's own source root is derived from its {@code package} declaration (so a bare
-     * file resolves even without a pom), unioned with any pom-declared source roots; the classpath
-     * comes from the project root (cp.txt, else best-effort mvn).
+     * An ad-hoc workspace rooted at a single source directory, with no classpath (source→source
+     * resolution only). Use this when a directory is known to be a self-contained source tree and
+     * should be taken verbatim — without {@link #discover}'s walk up to an enclosing build tool root,
+     * which would (correctly) adopt that outer project instead.
+     */
+    public static Workspace ofSourceRoot(Path dir) {
+        Path root = dir.toAbsolutePath().normalize();
+        return new Workspace(root, List.of(root), List.of());
+    }
+
+    /**
+     * Walk up from an arbitrary file to the enclosing project root (Maven {@code pom.xml} or a Gradle
+     * build marker) and build a workspace. The target file's own source root is derived from its
+     * {@code package} declaration (so a bare file resolves even without a build file), unioned with any
+     * build-declared source roots; the classpath comes from the project root (cp.txt, else best-effort
+     * {@code mvn}/{@code gradle}).
      */
     public static Workspace discover(Path anyFile) {
         Path start = anyFile.toAbsolutePath().normalize();
@@ -65,7 +103,7 @@ public final class Workspace {
 
         Path projectRoot = null;
         for (Path p = startDir; p != null; p = p.getParent()) {
-            if (Files.exists(p.resolve("pom.xml"))) {
+            if (isProjectRoot(p)) {
                 projectRoot = p;
                 break;
             }
@@ -208,8 +246,9 @@ public final class Workspace {
 
     /**
      * Classpath jars for a project root: prefer a committed {@code cp.txt}; if absent, best-effort
-     * {@code mvn dependency:build-classpath} (writes {@code cp.txt}) and re-read. Either failure
-     * degrades to an empty classpath (source→source resolution still works).
+     * auto-detect from the build tool — {@code mvn dependency:build-classpath} for Maven, or a Gradle
+     * init script for Gradle — each writing {@code cp.txt} then re-reading it. Any failure degrades
+     * to an empty classpath (source→source resolution still works).
      */
     private static List<Path> resolveClasspath(Path projectRoot) {
         Path cpFile = projectRoot.resolve("cp.txt");
@@ -218,24 +257,109 @@ public final class Workspace {
             return jars; // committed/manual cp.txt wins (even if it is intentionally empty)
         }
         if (Files.exists(projectRoot.resolve("pom.xml"))) {
-            try {
-                Process proc = new ProcessBuilder("mvn", "-q",
-                        "dependency:build-classpath", "-Dmdep.outputFile=cp.txt")
-                        .directory(projectRoot.toFile())
-                        .redirectErrorStream(true)
-                        .start();
-                proc.getInputStream().readAllBytes(); // drain so the subprocess can finish
-                if (proc.waitFor() == 0) {
+            return mavenClasspath(projectRoot, cpFile);
+        }
+        if (isGradleRoot(projectRoot)) {
+            return gradleClasspath(projectRoot, cpFile);
+        }
+        return List.of();
+    }
+
+    /** Best-effort {@code mvn dependency:build-classpath} → writes {@code cp.txt}, re-read. */
+    private static List<Path> mavenClasspath(Path projectRoot, Path cpFile) {
+        try {
+            Process proc = new ProcessBuilder("mvn", "-q",
+                    "dependency:build-classpath", "-Dmdep.outputFile=cp.txt")
+                    .directory(projectRoot.toFile())
+                    .redirectErrorStream(true)
+                    .start();
+            proc.getInputStream().readAllBytes(); // drain so the subprocess can finish
+            if (proc.waitFor() == 0) {
+                return readClasspathJars(cpFile);
+            }
+        } catch (IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            // mvn unavailable/failed → empty classpath
+        }
+        return List.of();
+    }
+
+    /**
+     * Best-effort Gradle classpath: there is no built-in classpath task, so we feed an
+     * {@code --init-script} that registers {@code jcmaPrintClasspath} on the root project — it prints
+     * {@code testRuntimeClasspath} (the superset covering both main and test deps; falls back to
+     * {@code runtimeClasspath}) as a {@link File#pathSeparator}-joined list. We capture that line,
+     * persist it as {@code cp.txt}, and re-read. The wrapper ({@code gradlew}) is preferred over a
+     * {@code gradle} on {@code PATH}. Any failure (no Gradle, non-Java root, daemon error) degrades
+     * to an empty classpath.
+     */
+    private static List<Path> gradleClasspath(Path projectRoot, Path cpFile) {
+        Path initScript = null;
+        try {
+            initScript = Files.createTempFile("jcma-cp", ".gradle");
+            Files.writeString(initScript, GRADLE_INIT_SCRIPT);
+            Process proc = new ProcessBuilder(gradleInvocation(projectRoot), "-q", "--console=plain",
+                    "--init-script", initScript.toString(), "jcmaPrintClasspath")
+                    .directory(projectRoot.toFile())
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .start();
+            String stdout = new String(proc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            if (proc.waitFor() == 0) {
+                String cp = lastNonBlankLine(stdout);
+                if (cp != null) {
+                    Files.writeString(cpFile, cp);
                     return readClasspathJars(cpFile);
                 }
-            } catch (IOException | InterruptedException e) {
-                if (e instanceof InterruptedException) {
-                    Thread.currentThread().interrupt();
+            }
+        } catch (IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            // gradle unavailable/failed → empty classpath
+        } finally {
+            if (initScript != null) {
+                try {
+                    Files.deleteIfExists(initScript);
+                } catch (IOException ignore) {
+                    // temp init script cleanup is best-effort
                 }
-                // mvn unavailable/failed → empty classpath
             }
         }
         return List.of();
+    }
+
+    /** The Gradle command: the project's wrapper if present, else a {@code gradle} on {@code PATH}. */
+    private static String gradleInvocation(Path projectRoot) {
+        String wrapper = System.getProperty("os.name", "").toLowerCase().contains("win")
+                ? "gradlew.bat" : "gradlew";
+        Path w = projectRoot.resolve(wrapper);
+        return Files.isRegularFile(w) ? w.toAbsolutePath().toString() : "gradle";
+    }
+
+    /** The last non-blank line of {@code s} (the init-script's classpath line), or null if none. */
+    private static String lastNonBlankLine(String s) {
+        String last = null;
+        for (String line : s.split("\\R")) {
+            if (!line.isBlank()) {
+                last = line.trim();
+            }
+        }
+        return last;
+    }
+
+    /** Whether {@code dir} is a project root: a Maven {@code pom.xml} or any Gradle build marker. */
+    private static boolean isProjectRoot(Path dir) {
+        return Files.exists(dir.resolve("pom.xml")) || isGradleRoot(dir);
+    }
+
+    /** Whether {@code dir} carries a Gradle build marker (Kotlin or Groovy DSL, build or settings). */
+    private static boolean isGradleRoot(Path dir) {
+        return Files.exists(dir.resolve("build.gradle.kts"))
+                || Files.exists(dir.resolve("build.gradle"))
+                || Files.exists(dir.resolve("settings.gradle.kts"))
+                || Files.exists(dir.resolve("settings.gradle"));
     }
 
     public Path projectRoot() {

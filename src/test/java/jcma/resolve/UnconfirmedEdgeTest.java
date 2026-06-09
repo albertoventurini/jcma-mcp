@@ -41,7 +41,7 @@ class UnconfirmedEdgeTest {
     void unconfirmedRefsArePersistedAsEdgesToTheNamePlaceholder(@TempDir Path indexDir) throws Exception {
         index(REFS, indexDir);
         // Resolve by issuing the query, then close so overlay.log is flushed to disk.
-        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.discover(REFS), Metrics.create())) {
+        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.ofSourceRoot(REFS), Metrics.create())) {
             resolver.findReferences(target(resolver));
         }
         // Re-open the store independently: the placeholder's incoming edges must come from the
@@ -61,7 +61,7 @@ class UnconfirmedEdgeTest {
     @Test
     void tailIsGraphBackedAndCarriesBothMissesWithoutDoubleCounting(@TempDir Path indexDir) throws Exception {
         index(REFS, indexDir);
-        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.discover(REFS), Metrics.create())) {
+        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.ofSourceRoot(REFS), Metrics.create())) {
             References refs = resolver.findReferences(target(resolver));
 
             assertEquals(2, refs.unconfirmed().size(), "Mystery.poke + KnownMiss.use");

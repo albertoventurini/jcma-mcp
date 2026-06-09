@@ -31,7 +31,7 @@ class EdgeResolverCancellationTest {
     void preInterruptedFindReferencesBailsBeforeResolvingAnyFile(@TempDir Path indexDir) throws Exception {
         index(REFS, indexDir);
         Metrics metrics = Metrics.create();
-        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.discover(REFS), metrics)) {
+        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.ofSourceRoot(REFS), metrics)) {
             Symbol target = resolver.declarations("run").stream()
                     .filter(s -> TARGET_MONIKER.equals(s.moniker()))
                     .findFirst().orElseThrow(() -> new AssertionError("Service.run() not indexed"));
