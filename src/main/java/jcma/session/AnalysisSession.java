@@ -84,7 +84,8 @@ public final class AnalysisSession implements AutoCloseable {
         Path repoRoot = workspace.projectRoot().toAbsolutePath().normalize();
 
         EdgeResolver resolver = EdgeResolver.over(store, usageIndex, fileTable, engine, indexer, repoRoot, metrics);
-        FreshnessGuard guard = new FreshnessGuard(repoRoot, indexDir, fileTable, store, indexer, source, metrics);
+        FreshnessGuard guard = new FreshnessGuard(repoRoot, indexDir, fileTable, store, indexer, source,
+                Workspace.discoverSourceSets(repoRoot), metrics);
         Cascade cascade = new Cascade(guard, resolver, store);
         return new AnalysisSession(store, fileTable, resolver, guard, source, cascade, repoRoot);
     }

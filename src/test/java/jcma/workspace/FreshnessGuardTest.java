@@ -68,7 +68,8 @@ class FreshnessGuardTest {
     }
 
     private static FreshnessGuard guard(Path repo, LsmStore store) throws IOException {
-        return FreshnessGuard.open(repo, indexDir(repo), store, new Indexer(), FreshnessSource.none(), Metrics.noop());
+        return FreshnessGuard.open(repo, indexDir(repo), store, new Indexer(), FreshnessSource.none(),
+                roots(repo), Metrics.noop());
     }
 
     @Test
@@ -151,6 +152,23 @@ class FreshnessGuardTest {
             assertTrue(store.contains(PKG + "Beta#beta()."), "an untouched file is intact");
             assertFalse(FileTable.load(indexDir(repo)).paths().contains(Path.of("src/main/java/com/example/Alpha.java")),
                     "the row is dropped from the persisted table");
+        }
+    }
+
+    @Test
+    void reindexOneOnUntrackedButExistingFileIndexesIt(@TempDir Path repo) throws IOException {
+        writeClass(repo.resolve("src/main/java"), "Alpha", "alpha");
+        coldIndex(repo);
+
+        try (LsmStore store = LsmStore.open(indexDir(repo), CompactionPolicy.manual())) {
+            FreshnessGuard g = guard(repo, store);
+
+            // A brand-new file with no table row — cross-file new-file discovery (task-10 completeness).
+            writeClass(repo.resolve("src/main/java"), "Gamma", "gamma");
+
+            assertTrue(g.reindexOne(mainFile(repo, "Gamma")).reindexed(),
+                    "an untracked-but-existing file is allocated an id and indexed");
+            assertTrue(store.contains(PKG + "Gamma#gamma()."), "the new file's symbol is queryable");
         }
     }
 

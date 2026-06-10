@@ -3,6 +3,8 @@ package jcma.workspace;
 import jcma.index.FileIndex;
 import jcma.index.Indexer;
 import jcma.index.LsmStore;
+import jcma.index.SourceRoot;
+import jcma.index.SourceSet;
 import jcma.index.Symbol;
 import jcma.obs.Metrics;
 
@@ -37,17 +39,28 @@ public final class FreshnessGuard {
     private final LsmStore store;
     private final Indexer indexer;
     private final FreshnessSource source;
+    private final List<SourceRoot> sourceRoots; // for classifying a discovered new file (longest-prefix)
     private final Metrics metrics;
 
     public FreshnessGuard(Path repoRoot, Path indexDir, FileTable table, LsmStore store,
-            Indexer indexer, FreshnessSource source, Metrics metrics) {
+            Indexer indexer, FreshnessSource source, List<SourceRoot> sourceRoots, Metrics metrics) {
         this.repoRoot = repoRoot.toAbsolutePath().normalize();
         this.indexDir = indexDir;
         this.table = table;
         this.store = store;
         this.indexer = indexer;
         this.source = source;
+        this.sourceRoots = normalize(sourceRoots);
         this.metrics = metrics;
+    }
+
+    /** Absolutise + normalise each root's dir so {@link #classify} can do a clean prefix match. */
+    private static List<SourceRoot> normalize(List<SourceRoot> roots) {
+        List<SourceRoot> out = new ArrayList<>(roots.size());
+        for (SourceRoot r : roots) {
+            out.add(new SourceRoot(r.dir().toAbsolutePath().normalize(), r.set()));
+        }
+        return out;
     }
 
     /**
@@ -55,8 +68,9 @@ public final class FreshnessGuard {
      * The {@code store} must already be open against the same index.
      */
     public static FreshnessGuard open(Path repoRoot, Path indexDir, LsmStore store, Indexer indexer,
-            FreshnessSource source, Metrics metrics) throws IOException {
-        return new FreshnessGuard(repoRoot, indexDir, FileTable.load(indexDir), store, indexer, source, metrics);
+            FreshnessSource source, List<SourceRoot> sourceRoots, Metrics metrics) throws IOException {
+        return new FreshnessGuard(repoRoot, indexDir, FileTable.load(indexDir), store, indexer, source,
+                sourceRoots, metrics);
     }
 
     /**
@@ -85,7 +99,10 @@ public final class FreshnessGuard {
      * and swap its slice through the store as needed. The branches mirror {@link Reconciler}'s NEW/SUSPECT
      * logic, scoped to one file:
      * <ul>
-     *   <li><b>untracked</b> (no row) → no-op; cross-file discovery of a brand-new referrer is task-11;</li>
+     *   <li><b>untracked</b> (no row) → if the path is a real file, <b>discover</b> it: allocate an id,
+     *       classify its source set, Tier-1 index it, add the row, and return an all-{@code added}
+     *       {@link NodeDiff} (so the cascade re-binds prior unconfirmed refs to whatever it now defines);
+     *       a no-such-file is left untracked (task-10 new-file discovery);</li>
      *   <li><b>missing</b> (row exists, file gone) → tombstone its id and drop the row;</li>
      *   <li><b>size+mtime match</b> → fast-path no-op, no hash, no disk write;</li>
      *   <li><b>mtime-lie</b> (stat differs, hash equal) → refresh the row's stat so we don't rehash again;
@@ -102,8 +119,18 @@ public final class FreshnessGuard {
         Path abs = file.isAbsolute() ? file.normalize() : repoRoot.resolve(file).normalize();
         Path rel = repoRoot.relativize(abs);
         FileTable.Entry row = table.get(rel);
-        if (row == null) {
-            return NodeDiff.untracked(); // untracked → warm-reopen reconcile / new-file discovery territory
+        if (row == null) {                                        // NEW (untracked) → discover or skip
+            if (!Files.isRegularFile(abs)) {
+                return NodeDiff.untracked();                       // no such file → nothing to discover
+            }
+            int fid = table.allocateId();
+            SourceSet set = classify(abs);
+            FileIndex fi = indexer.indexFile(fid, abs, set);
+            store.applyEdit(fi);
+            table.put(rel, fid, Fingerprint.of(abs), set);
+            table.save(indexDir);
+            metrics.counter("freshness.discovered").add(1);
+            return NodeDiff.of(fid, List.of(), fi.symbols());     // all-added: re-bind unconfirmed referrers
         }
         metrics.counter("freshness.checked").add(1);
         int fid = row.fileId();
@@ -139,5 +166,23 @@ public final class FreshnessGuard {
     private static boolean statMatches(Path file, Fingerprint fp) throws IOException {
         return Files.size(file) == fp.size()
                 && Files.getLastModifiedTime(file).toMillis() == fp.mtime();
+    }
+
+    /**
+     * The {@link SourceSet} of a discovered file: the {@link SourceRoot} whose dir is the <b>longest</b>
+     * prefix of {@code abs} (so a {@code src/test/java} root wins over a {@code src} root for a test
+     * file). Defaults to {@link SourceSet#MAIN} when no root contains it — correct for a flat repo
+     * indexed as a single MAIN root, and a safe default otherwise.
+     */
+    private SourceSet classify(Path abs) {
+        SourceSet best = SourceSet.MAIN;
+        int bestLen = -1;
+        for (SourceRoot r : sourceRoots) {
+            if (abs.startsWith(r.dir()) && r.dir().getNameCount() > bestLen) {
+                bestLen = r.dir().getNameCount();
+                best = r.set();
+            }
+        }
+        return best;
     }
 }

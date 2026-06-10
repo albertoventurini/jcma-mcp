@@ -11,6 +11,8 @@ import jcma.engine.ResolvedOccurrence;
 import jcma.engine.ResolvedRef;
 import jcma.engine.ResolvedTarget;
 import jcma.engine.ResolvedType;
+import jcma.engine.StructuralParser;
+import jcma.engine.UsageSite;
 import jcma.index.CompactionPolicy;
 import jcma.index.EdgeType;
 import jcma.index.FileIndex;
@@ -76,6 +78,15 @@ public final class EdgeResolver implements AutoCloseable {
     // (per-name value edges + the once-per-file structural edges) and is re-applied as that union.
     private final Map<Integer, FileSlice> slices = new HashMap<>();
     private final Map<Path, List<String>> lineCache = new HashMap<>();
+
+    // In-session usage overlay (task-10): target simple name → file ids that use it, re-derived from a
+    // file's current usages after any in-session reindex. It unions with the static usage-names.seg so a
+    // session-new file (and an edited file that gained a new use) becomes a find_references candidate —
+    // the static index was built once at index time and excludes both. overlayNamesByFile is the inverse
+    // (file → the names it currently contributes) so clearing a file is O(1) per name, not a full scan.
+    private final Map<String, Set<Integer>> usageOverlay = new HashMap<>();
+    private final Map<Integer, Set<String>> overlayNamesByFile = new HashMap<>();
+    private final StructuralParser overlayParser = new StructuralParser();
 
     /**
      * Per-file Tier-2 accumulation (the cache unit is now {@code (file, name)} for value edges, and
@@ -218,16 +229,71 @@ public final class EdgeResolver implements AutoCloseable {
      * complete for {@code simpleName}.
      */
     private void ensureResolved(String simpleName) {
-        if (usageIndex == null) {
-            return;
-        }
-        for (int fid : usageIndex.candidateFiles(simpleName)) {
+        for (int fid : candidateFiles(simpleName)) {
             // Cooperative cancel checkpoint (task-12): the time-box interrupts this (single) worker
             // thread; bail here — between files, never mid-applyEdit, so the store is never torn.
             if (Thread.currentThread().isInterrupted()) {
                 throw new java.util.concurrent.CancellationException("find_references cancelled");
             }
             warmForReferences(fid, simpleName);
+        }
+    }
+
+    /**
+     * The candidate file set for {@code name}: the static {@link UsageNameIndex#candidateFiles} postings
+     * (when {@code usage-names.seg} is present) <b>unioned</b> with the in-session {@link #usageOverlay}.
+     * The overlay is what makes a session-new or newly-edited usage discoverable — the static index is
+     * built once at index time and cannot list it.
+     */
+    private Set<Integer> candidateFiles(String name) {
+        Set<Integer> out = new HashSet<>();
+        if (usageIndex != null) {
+            for (int fid : usageIndex.candidateFiles(name)) {
+                out.add(fid);
+            }
+        }
+        out.addAll(usageOverlay.getOrDefault(name, Set.of()));
+        return out;
+    }
+
+    /**
+     * Re-derive {@code fid}'s {@link #usageOverlay} entries from its <em>current</em> usages (task-10).
+     * First clears the file's prior overlay names (so a removed use stops being a candidate), then — if
+     * the file exists and parses — re-adds {@code fid} under each {@link UsageSite#targetName()}, the
+     * same source {@code UsageNameIndexer} walks. A missing or unparseable file is left cleared, which is
+     * exactly the tombstone case (the file is gone → no overlay entries).
+     */
+    public void refreshUsageOverlay(int fid) {
+        for (String name : overlayNamesByFile.getOrDefault(fid, Set.of())) {
+            Set<Integer> files = usageOverlay.get(name);
+            if (files != null) {
+                files.remove(fid);
+                if (files.isEmpty()) {
+                    usageOverlay.remove(name);
+                }
+            }
+        }
+        overlayNamesByFile.remove(fid);
+
+        Path path = absPathOf(fid);
+        if (path == null || !Files.isRegularFile(path)) {
+            metrics.counter("overlay.dropped").add(1);
+            return;
+        }
+        try {
+            Set<String> names = new HashSet<>();
+            for (UsageSite u : overlayParser.usages(path)) {
+                names.add(u.targetName());
+            }
+            for (String name : names) {
+                usageOverlay.computeIfAbsent(name, k -> new HashSet<>()).add(fid);
+            }
+            if (!names.isEmpty()) {
+                overlayNamesByFile.put(fid, names);
+            }
+            metrics.counter("overlay.registered").add(1);
+        } catch (IOException unparseable) {
+            metrics.counter("overlay.dropped").add(1); // left cleared — cannot derive usages
         }
     }
 
@@ -369,10 +435,8 @@ public final class EdgeResolver implements AutoCloseable {
      */
     private void ensureHierarchyResolved(Symbol target) {
         warmStructural(target.fileId());
-        if (usageIndex != null) {
-            for (int fid : usageIndex.candidateFiles(target.name())) {
-                warmStructural(fid);
-            }
+        for (int fid : candidateFiles(target.name())) {
+            warmStructural(fid);
         }
     }
 

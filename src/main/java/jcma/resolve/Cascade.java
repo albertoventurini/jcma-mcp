@@ -52,7 +52,22 @@ public final class Cascade {
         for (Path file : changedFiles) {
             int fid = resolver.fileId(file);
             if (fid < 0) {
-                guard.reindexOne(file); // untracked / not-yet-known to Tier-2 → reconcile only
+                // Untracked → discover it (FreshnessGuard allocates an id + Tier-1 indexes a real file).
+                NodeDiff diff = guard.reindexOne(file);
+                if (!diff.reindexed()) {
+                    continue; // truly untracked: no such file (gone) — nothing to discover
+                }
+                int newFid = diff.fileId();
+                if (!engineRefreshed) {
+                    resolver.refreshEngine();
+                    engineRefreshed = true;
+                }
+                // refreshSymbols is REQUIRED: enclosingMoniker reads symbolsByFile, so without the new
+                // file's declarations its resolved occurrences would attribute to nothing (no edge written).
+                resolver.refreshSymbols(newFid);
+                resolver.refreshUsageOverlay(newFid);     // make the new file a find_references candidate
+                Map<String, String> names = namesByMoniker(store.symbolsOf(newFid));
+                collectNames(changedNames, names, diff.added()); // re-bind prior unconfirmed refs to its decls
                 continue;
             }
             // Capture old declarations + hierarchy BEFORE the reindex drops the file's Tier-2 edges.
@@ -72,6 +87,7 @@ public final class Cascade {
             }
             resolver.refreshSymbols(fid); // caches now match the reindexed Tier-1 symbols…
             resolver.reResolve(fid);      // …then re-resolve so the new hierarchy edges are in the graph
+            resolver.refreshUsageOverlay(fid); // re-derive overlay (edited file's new use; tombstone clears)
             reResolved.add(fid);
 
             Map<String, String> newNames = namesByMoniker(store.symbolsOf(fid));

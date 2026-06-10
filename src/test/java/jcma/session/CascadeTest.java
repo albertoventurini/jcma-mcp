@@ -203,4 +203,131 @@ class CascadeTest {
             assertTrue(tailHas(after, "Client.java"), "Client's now-broken call surfaces as unconfirmed");
         }
     }
+
+    // ------------------------------------------------------------------ 6. new referrer — in-session discovery (task-10)
+
+    @Test
+    void newReferrerFileIsDiscoveredByFindReferences(@TempDir Path repo) throws IOException {
+        write(repo, "Service.java", "package app; public class Service { public void run() {} }");
+        write(repo, "Client.java", "package app; public class Client { void go() { new Service().run(); } }");
+        Path indexDir = index(repo);
+
+        TreeScanSource source = new TreeScanSource(List.of(repo));
+        try (AnalysisSession s = AnalysisSession.open(indexDir, Workspace.discover(repo), source, Metrics.create())) {
+            Symbol run = decl(s, "app/Service#run().");
+            References before = s.findReferences(run);
+            assertTrue(hasGroup(before, "app/Client#go()."), "baseline: Client references run()");
+            assertFalse(hasGroup(before, "app/NewClient#use()."), "NewClient does not exist yet");
+
+            // A brand-new file referencing an already-indexed symbol — the headline bug.
+            write(repo, "NewClient.java", "package app; public class NewClient { void use() { new Service().run(); } }");
+
+            References after = s.findReferences(run);
+            assertTrue(hasGroup(after, "app/NewClient#use()."),
+                    "a brand-new in-session referrer is discovered by find_references");
+        }
+    }
+
+    // ------------------------------------------------------------------ 7. new definition — re-bind (Part A added-names)
+
+    @Test
+    void newDefinitionRebindsAPreviouslyUnconfirmedRef(@TempDir Path repo) throws IOException {
+        write(repo, "Service.java", "package app; public class Service { public void run() {} }");
+        write(repo, "Client.java", "package app; public class Client { void go(Widget w) { new Service().run(); } }");
+        Path indexDir = index(repo);
+
+        TreeScanSource source = new TreeScanSource(List.of(repo));
+        try (AnalysisSession s = AnalysisSession.open(indexDir, Workspace.discover(repo), source, Metrics.create())) {
+            // Warm Client (candidate for "run"): its Widget param-type ref resolves unconfirmed (undeclared).
+            s.findReferences(decl(s, "app/Service#run()."));
+
+            // A brand-new file *defining* Widget → re-bind the prior unconfirmed type ref.
+            write(repo, "Widget.java", "package app; public class Widget {}");
+
+            Symbol widget = widget(s); // declarations(...) drains the scanner → indexes Widget → cascade
+            assertTrue(invalidated(s, "Client.java"),
+                    "defining Widget cascades to Client via rev(Widget~UNRESOLVED)");
+
+            References after = s.findReferences(widget);
+            assertTrue(hasGroup(after, "app/Client#go(Widget)."), "Client's Widget ref now binds (tail → confirmed)");
+            assertFalse(tailHas(after, "Client.java"), "and is no longer in the unconfirmed tail");
+        }
+    }
+
+    /** The Widget type symbol (a top-level type has no {@code #member} suffix the {@link #decl} helper expects). */
+    private static Symbol widget(AnalysisSession s) throws IOException {
+        return s.declarations("Widget").stream()
+                .filter(sym -> sym.moniker().equals("app/Widget#"))
+                .findFirst().orElseThrow(() -> new AssertionError("Widget not indexed"));
+    }
+
+    // ------------------------------------------------------------------ 8. delete — overlay + row cleanup
+
+    @Test
+    void deletedNewFileIsNoLongerAReferrer(@TempDir Path repo) throws IOException {
+        write(repo, "Service.java", "package app; public class Service { public void run() {} }");
+        write(repo, "Client.java", "package app; public class Client { void go() { new Service().run(); } }");
+        Path indexDir = index(repo);
+
+        TreeScanSource source = new TreeScanSource(List.of(repo));
+        try (AnalysisSession s = AnalysisSession.open(indexDir, Workspace.discover(repo), source, Metrics.create())) {
+            Symbol run = decl(s, "app/Service#run().");
+            s.findReferences(run); // baseline warm
+
+            Path created = write(repo, "NewClient.java",
+                    "package app; public class NewClient { void use() { new Service().run(); } }");
+            assertTrue(hasGroup(s.findReferences(run), "app/NewClient#use()."), "the new referrer is discovered");
+
+            Files.delete(created);
+
+            References after = s.findReferences(run);
+            assertFalse(hasGroup(after, "app/NewClient#use()."),
+                    "a deleted in-session file is no longer reported (row tombstoned + overlay cleared)");
+        }
+    }
+
+    // ------------------------------------------------------------------ 9. edited file gains a usage (Part B overlay)
+
+    @Test
+    void editedFileGainingAUsageIsDiscovered(@TempDir Path repo) throws IOException {
+        write(repo, "Service.java", "package app; public class Service { public void run() {} }");
+        write(repo, "Client.java", "package app; public class Client { void go() {} }"); // no use of run() yet
+        Path client = app(repo).resolve("Client.java");
+        Path indexDir = index(repo);
+
+        TreeScanSource source = new TreeScanSource(List.of(repo));
+        try (AnalysisSession s = AnalysisSession.open(indexDir, Workspace.discover(repo), source, Metrics.create())) {
+            Symbol run = decl(s, "app/Service#run().");
+            assertFalse(hasGroup(s.findReferences(run), "app/Client#go()."), "Client does not use run() yet");
+
+            // The sibling hole: a tracked file edited in-session to add a NEW use of a name it didn't use at
+            // index time — invisible to the static usage-names.seg, found only via the in-session overlay.
+            edit(client, "package app; public class Client { void go() { new Service().run(); } }");
+
+            assertTrue(hasGroup(s.findReferences(run), "app/Client#go()."),
+                    "the edited file's new usage is discovered via the overlay");
+        }
+    }
+
+    // ------------------------------------------------------------------ 10. common path — no regression
+
+    @Test
+    void unchangedQueryIsStableAndCascadesNothing(@TempDir Path repo) throws IOException {
+        write(repo, "Service.java", "package app; public class Service { public void run() {} }");
+        write(repo, "Client.java", "package app; public class Client { void go() { new Service().run(); } }");
+        Path indexDir = index(repo);
+
+        TreeScanSource source = new TreeScanSource(List.of(repo));
+        try (AnalysisSession s = AnalysisSession.open(indexDir, Workspace.discover(repo), source, Metrics.create())) {
+            Symbol run = decl(s, "app/Service#run().");
+            References first = s.findReferences(run);
+            assertTrue(hasGroup(first, "app/Client#go()."), "baseline reference present");
+
+            References second = s.findReferences(run); // nothing changed on disk
+            assertTrue(s.invalidatedByLastRefresh().isEmpty(),
+                    "a nothing-new query returns no file to unresolved (common path unaffected)");
+            assertEquals(first.groups().size(), second.groups().size(), "the result is stable across the repeat");
+            assertTrue(hasGroup(second, "app/Client#go()."), "and still complete");
+        }
+    }
 }
