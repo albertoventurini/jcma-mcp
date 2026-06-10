@@ -39,14 +39,14 @@ public final class SearchSymbolsTool implements ToolHandler {
 
     @Override
     public String name() {
-        return "search_symbols";
+        return "search_java_symbols";
     }
 
     @Override
     public String description() {
         return "Find Java declarations by name, ranked by relevance — locate a type or member when you know "
                 + "part of its name. `query` = case-sensitive substring; optional `kind` filter; `limit` "
-                + "(default 50). Then use find_definition/find_references to navigate.";
+                + "(default 50). Then use find_java_definition/find_java_references to navigate.";
     }
 
     @Override
@@ -80,7 +80,7 @@ public final class SearchSymbolsTool implements ToolHandler {
         JsonObject in = ToolSupport.obj(args);
         String query = in.optString("query");
         if (query == null || query.isEmpty()) {
-            return ToolResult.text("search_symbols: provide a non-empty query");
+            return ToolResult.text("search_java_symbols: provide a non-empty query");
         }
         SymbolKind kind = null;
         String kindArg = in.optString("kind");

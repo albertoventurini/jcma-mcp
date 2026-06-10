@@ -30,6 +30,13 @@ class SearchSymbolsToolTest {
     }
 
     @Test
+    void advertisedNameEmbedsJava() {
+        // The wire name is the only per-tool signal that survives tool-name-only deferral, and the
+        // jcma namespace is opaque — so the name itself must say "java".
+        assertEquals("search_java_symbols", tool(null).name());
+    }
+
+    @Test
     void resultsAreRelevanceOrdered(@TempDir Path indexDir) throws Exception {
         try (QueryService svc = ToolTestSupport.queryService(SHAPES, indexDir)) {
             // "area" matches Circle.area + Shape.area (both exact); the moniker tiebreak puts Circle first.

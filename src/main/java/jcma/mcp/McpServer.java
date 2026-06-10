@@ -42,12 +42,12 @@ public final class McpServer {
      * reach for it. Sent once per session (not per call), so a sentence or two is affordable.
      */
     private static final String INSTRUCTIONS =
-            "jcma is a semantic code-intelligence engine for Java projects. Its tools resolve symbols "
-                    + "through the type system (imports, overloads, scope) rather than matching text, so "
-                    + "prefer them over grep/Read when navigating Java: locating where a symbol is declared, "
-                    + "finding every confirmed use of a symbol, and searching for a type or member by partial "
-                    + "name. See the tool list for the specific operations. All operate on the current "
-                    + "project's indexed Java sources.";
+            "When you need to navigate Java in this project — find where a class, method, or field is "
+                    + "declared, find every confirmed use of a symbol, or look up a type or member by partial "
+                    + "name — use jcma's tools rather than grep, plain text search, or reading files to hunt. "
+                    + "jcma resolves symbols through the Java type system (imports, overloads, scope), so it "
+                    + "returns the actual declaration and confirmed uses, not lookalike text. Reach for it for "
+                    + "any \"where is X defined\" or \"who uses X\" question about this project's Java sources.";
 
     private final InputStream in;
     private final PrintStream out;

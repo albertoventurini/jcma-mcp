@@ -34,6 +34,13 @@ class FindDefinitionToolTest {
     }
 
     @Test
+    void advertisedNameEmbedsJava() {
+        // The wire name is the only per-tool signal that survives tool-name-only deferral, and the
+        // jcma namespace is opaque — so the name itself must say "java".
+        assertEquals("find_java_definition", tool(null).name());
+    }
+
+    @Test
     void symbolModeReturnsTheDeclarationSiteAndSnippet(@TempDir Path indexDir) throws Exception {
         try (QueryService svc = ToolTestSupport.queryService(REFS, indexDir)) {
             ToolResult r = tool(svc).call(args("{\"symbol\":\"run\"}"));

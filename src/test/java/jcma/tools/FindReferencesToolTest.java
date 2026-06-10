@@ -1,5 +1,6 @@
 package jcma.tools;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -28,6 +29,13 @@ class FindReferencesToolTest {
 
     private static FindReferencesTool tool(QueryService svc) {
         return new FindReferencesTool(() -> svc, BudgetPolicy.defaultPolicy(Metrics.noop()));
+    }
+
+    @Test
+    void advertisedNameEmbedsJava() {
+        // The wire name is the only per-tool signal that survives tool-name-only deferral, and the
+        // jcma namespace is opaque — so the name itself must say "java".
+        assertEquals("find_java_references", tool(null).name());
     }
 
     private static int count(String haystack, String needle) {

@@ -40,7 +40,7 @@ public final class FindDefinitionTool implements ToolHandler {
 
     @Override
     public String name() {
-        return "find_definition";
+        return "find_java_definition";
     }
 
     @Override
@@ -65,7 +65,7 @@ public final class FindDefinitionTool implements ToolHandler {
         boolean symbolMode = symbol != null && !symbol.isBlank();
         boolean posMode = file != null && line != null && col != null;
         if (symbolMode == posMode) {
-            return ToolResult.error("find_definition: provide either {symbol} or {file, line, col}");
+            return ToolResult.error("find_java_definition: provide either {symbol} or {file, line, col}");
         }
         try {
             QueryService q = svc.get();
@@ -87,7 +87,7 @@ public final class FindDefinitionTool implements ToolHandler {
             }
             return budget.apply(name(), ToolResult.of(out));
         } catch (IOException | QueryTimeoutException e) {
-            return ToolResult.error("find_definition failed: " + e.getMessage());
+            return ToolResult.error("find_java_definition failed: " + e.getMessage());
         }
     }
 }

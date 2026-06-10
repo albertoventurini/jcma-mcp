@@ -39,7 +39,7 @@ public final class FindReferencesTool implements ToolHandler {
 
     @Override
     public String name() {
-        return "find_references";
+        return "find_java_references";
     }
 
     @Override
@@ -64,7 +64,7 @@ public final class FindReferencesTool implements ToolHandler {
         boolean symbolMode = symbol != null && !symbol.isBlank();
         boolean posMode = file != null && line != null && col != null;
         if (symbolMode == posMode) {
-            return ToolResult.error("find_references: provide either {symbol} or {file, line, col}");
+            return ToolResult.error("find_java_references: provide either {symbol} or {file, line, col}");
         }
         try {
             QueryService q = svc.get();
@@ -94,7 +94,7 @@ public final class FindReferencesTool implements ToolHandler {
             Shaping.unconfirmedTail(last).ifPresent(out::add);
             return budget.apply(name(), ToolResult.of(out));
         } catch (IOException | QueryTimeoutException e) {
-            return ToolResult.error("find_references failed: " + e.getMessage());
+            return ToolResult.error("find_java_references failed: " + e.getMessage());
         }
     }
 
