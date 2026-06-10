@@ -27,3 +27,16 @@ cp.txt
 *.iml
 .vscode/
 .DS_Store
+
+# Eclipse / jdtls (Buildship import — IDE metadata + its parallel bin/ compile output)
+.project
+.classpath
+.settings/
+bin/
+
+# Stray dependency sources extracted by the IDE's "go to definition" (not project code)
+com/
+
+# Local MCP server registration: machine-specific absolute path to the native binary,
+# so each developer keeps their own (not shared).
+.mcp.json
