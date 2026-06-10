@@ -128,6 +128,51 @@ class McpServerTest {
         assertEquals(1, boots.get(), "bootstrap is guarded — built once across many tool calls");
     }
 
+    // ---- observability --------------------------------------------------------------------------
+
+    /** Records every call the server reports, so a test can assert what was logged. */
+    private static final class CapturingCallLog implements jcma.obs.CallLog {
+        record Rec(String tool, String request, boolean ok, long latencyNanos, int responseBytes) {}
+
+        final List<Rec> records = new ArrayList<>();
+
+        @Override
+        public void record(String tool, String request, boolean ok, long latencyNanos, int responseBytes) {
+            records.add(new Rec(tool, request, ok, latencyNanos, responseBytes));
+        }
+    }
+
+    /** Drive INIT + one health call through a fresh server with the given metrics + call log. */
+    private static void driveHealthCall(Metrics metrics, jcma.obs.CallLog callLog) throws IOException {
+        ByteArrayInputStream in =
+                new ByteArrayInputStream((INIT + "\n" + CALL_HEALTH + "\n").getBytes(UTF_8));
+        PrintStream out = new PrintStream(new ByteArrayOutputStream(), true, UTF_8);
+        PrintStream err = new PrintStream(new ByteArrayOutputStream(), true, UTF_8);
+        new McpServer(in, out, err, registry(), () -> {}, metrics, callLog).serve();
+    }
+
+    @Test
+    void toolsCallRecordsPerToolMetrics() throws IOException {
+        Metrics metrics = Metrics.create();
+        driveHealthCall(metrics, jcma.obs.CallLog.noop());
+        assertEquals(1, metrics.counter("mcp.call.health").sum(),
+                "each tool gets its own named counter, not one shared bucket");
+        assertEquals(1, metrics.timer("mcp.call.health").count(),
+                "and its own latency timer");
+    }
+
+    @Test
+    void toolsCallIsRecordedToTheCallLog() throws IOException {
+        CapturingCallLog callLog = new CapturingCallLog();
+        driveHealthCall(Metrics.noop(), callLog);
+        assertEquals(1, callLog.records.size(), "the health call is logged exactly once");
+        CapturingCallLog.Rec rec = callLog.records.get(0);
+        assertEquals("health", rec.tool());
+        assertTrue(rec.ok(), "a healthy call logs ok=true");
+        assertEquals(2, rec.responseBytes(), "the rendered response byte count is captured (\"ok\")");
+        assertTrue(rec.latencyNanos() >= 0, "latency is measured");
+    }
+
     // ---- error model ----------------------------------------------------------------------------
 
     @Test

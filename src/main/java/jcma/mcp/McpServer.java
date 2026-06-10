@@ -6,6 +6,7 @@ import jcma.mcp.json.JsonValue;
 import jcma.mcp.json.JsonValue.JsonArray;
 import jcma.mcp.json.JsonValue.JsonObject;
 import jcma.mcp.json.JsonWriter;
+import jcma.obs.CallLog;
 import jcma.obs.Metrics;
 import jcma.response.ToolResult;
 
@@ -41,17 +42,24 @@ public final class McpServer {
     private final ToolRegistry registry;
     private final Runnable bootstrap;
     private final Metrics metrics;
+    private final CallLog callLog;
 
     private boolean bootstrapped;
 
     public McpServer(InputStream in, PrintStream out, PrintStream err,
             ToolRegistry registry, Runnable bootstrap, Metrics metrics) {
+        this(in, out, err, registry, bootstrap, metrics, CallLog.noop());
+    }
+
+    public McpServer(InputStream in, PrintStream out, PrintStream err,
+            ToolRegistry registry, Runnable bootstrap, Metrics metrics, CallLog callLog) {
         this.in = in;
         this.out = out;
         this.err = err;
         this.registry = registry;
         this.bootstrap = bootstrap;
         this.metrics = metrics;
+        this.callLog = callLog;
     }
 
     /** Run the loop until {@code shutdown}/{@code exit} or EOF. */
@@ -140,16 +148,34 @@ public final class McpServer {
         } catch (RuntimeException e) {
             // A tool failure is a result with isError:true, never a transport error.
             toolResult = ToolResult.error(name + " failed: " + e.getMessage());
-        } finally {
-            metrics.counter("mcp.tools_call").increment();
-            metrics.timer("mcp.tools_call").record(System.nanoTime() - t0);
         }
+        long elapsed = System.nanoTime() - t0;
+        String rendered = toolResult.render();
+        int responseBytes = rendered.getBytes(StandardCharsets.UTF_8).length;
+
+        // Per-tool observability: a named counter/timer (not one shared bucket) plus the call log.
+        metrics.counter("mcp.call." + name).increment();
+        metrics.timer("mcp.call." + name).record(elapsed);
+        if (toolResult.isError()) {
+            metrics.counter("mcp.call." + name + ".error").increment();
+        }
+        callLog.record(name, summarize(args), !toolResult.isError(), elapsed, responseBytes);
+
         JsonObject content = JsonObject.empty()
                 .with("type", JsonValue.of("text"))
-                .with("text", JsonValue.of(toolResult.render()));
+                .with("text", JsonValue.of(rendered));
         return result(id, JsonObject.empty()
                 .with("content", new JsonArray(List.of(content)))
                 .with("isError", JsonValue.of(toolResult.isError())));
+    }
+
+    /** A compact, length-capped JSON rendering of the call arguments for the call log. */
+    private static String summarize(JsonValue args) {
+        if (args == null || args instanceof JsonValue.JsonNull) {
+            return "{}";
+        }
+        String json = JsonWriter.write(args);
+        return json.length() <= 512 ? json : json.substring(0, 509) + "...";
     }
 
     /** Run the pause-to-index bootstrap once, on the first tool call. */

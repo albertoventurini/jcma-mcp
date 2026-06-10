@@ -36,11 +36,23 @@ public final class IndexLayout {
      * it's referenced on the command line (relative path, symlink, trailing slash).
      */
     public static Path defaultIndexDir(Path repo) {
+        return cacheRoot().resolve("index").resolve(repoSlug(repo));
+    }
+
+    /**
+     * Per-repo MCP call log: {@code <cacheRoot>/logs/<name>-<hash>.log}. One file per repo (keyed
+     * the same way as the index dir) so concurrent {@code jcma serve} processes — one per repo under
+     * an agent — never interleave their lines into a shared file.
+     */
+    public static Path serveLogFile(Path repo) {
+        return cacheRoot().resolve("logs").resolve(repoSlug(repo) + ".log");
+    }
+
+    /** {@code <name>-<hash>}: a recognizable, filesystem-safe key for {@code repo}'s canonical path. */
+    private static String repoSlug(Path repo) {
         Path canonical = canonicalize(repo);
         String leaf = canonical.getFileName() != null ? canonical.getFileName().toString() : "root";
-        String name = sanitize(leaf);
-        String hash = hash(canonical.toString());
-        return cacheRoot().resolve("index").resolve(name + "-" + hash);
+        return sanitize(leaf) + "-" + hash(canonical.toString());
     }
 
     private static Path canonicalize(Path repo) {

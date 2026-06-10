@@ -87,7 +87,7 @@ class ServeLifecycleTest {
             assertTrue(call.err().contains("indexing"), "a one-time stderr indexing note: " + call.err());
             assertTrue(call.out().contains("\"isError\":false"), "the tool call returns a result: " + call.out());
         } finally {
-            deleteRecursively(indexDir);
+            cleanCache(repo, indexDir);
         }
     }
 
@@ -105,8 +105,16 @@ class ServeLifecycleTest {
             assertTrue(warm.err().contains("up to date"), "a warm reconcile reports up-to-date: " + warm.err());
             assertFalse(warm.err().contains("indexing"), "a warm repo is not re-indexed: " + warm.err());
         } finally {
-            deleteRecursively(indexDir);
+            cleanCache(repo, indexDir);
         }
+    }
+
+    /** Remove every ~/.cache artifact a serve run created for {@code repo}: the index dir and the call log. */
+    private static void cleanCache(Path repo, Path indexDir) throws IOException {
+        deleteRecursively(indexDir);
+        Path log = IndexLayout.serveLogFile(repo);
+        Files.deleteIfExists(log);
+        Files.deleteIfExists(log.resolveSibling(log.getFileName() + ".1"));
     }
 
     /** Remove the default cache dir a serve/index run created so the test leaves no trace in ~/.cache. */

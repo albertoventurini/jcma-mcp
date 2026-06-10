@@ -8,7 +8,10 @@ import jcma.index.SourceSet;
 import jcma.mcp.HealthTool;
 import jcma.mcp.McpServer;
 import jcma.mcp.ToolRegistry;
+import jcma.obs.CallLog;
+import jcma.obs.FileCallLog;
 import jcma.obs.Metrics;
+import jcma.obs.MetricsReport;
 import jcma.query.QueryService;
 import jcma.response.BudgetPolicy;
 import jcma.session.AnalysisSession;
@@ -55,6 +58,8 @@ final class Serve {
         Path indexDir = IndexLayout.defaultIndexDir(repo);
         Workspace workspace = Workspace.discover(repo);
         Metrics metrics = Metrics.create();
+        // Per-repo, size-bounded JSON call log — the only persistent per-call trail (the wire carries none).
+        CallLog callLog = FileCallLog.open(IndexLayout.serveLogFile(repo), 8L << 20);
 
         // Tagged source roots (main + test); fall back to the repo itself as MAIN (cf. Index).
         List<SourceRoot> roots = new ArrayList<>();
@@ -70,9 +75,13 @@ final class Serve {
         Session session = new Session();
         ToolRegistry registry = new ToolRegistry();
         BudgetPolicy budget = BudgetPolicy.defaultPolicy(metrics);
-        registry.register(new HealthTool(() -> session.svc == null
-                ? "jcma: not yet indexed"
-                : "ok — " + repo + " indexed and ready"));
+        registry.register(new HealthTool(() -> {
+            String base = session.svc == null
+                    ? "jcma: not yet indexed"
+                    : "ok — " + repo + " indexed and ready";
+            String report = MetricsReport.format(metrics);
+            return report.isEmpty() ? base : base + "\n\n" + report;
+        }));
         registry.register(new FindDefinitionTool(() -> session.svc, budget));
         registry.register(new FindReferencesTool(() -> session.svc, budget));
         registry.register(new SearchSymbolsTool(() -> session.svc, budget));
@@ -101,12 +110,16 @@ final class Serve {
         };
 
         try {
-            new McpServer(System.in, out, err, registry, bootstrap, metrics).serve();
+            new McpServer(System.in, out, err, registry, bootstrap, metrics, callLog).serve();
             return 0;
         } catch (Exception e) {
             err.println("jcma: serve failed: " + e.getMessage());
             return 1;
         } finally {
+            String report = MetricsReport.format(metrics);
+            if (!report.isEmpty()) {
+                err.println("jcma: metrics on shutdown —\n" + report);
+            }
             if (session.svc != null) {
                 try {
                     session.svc.close();
