@@ -23,6 +23,7 @@ import jcma.workspace.Workspace;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -112,6 +113,38 @@ public final class AnalysisSession implements AutoCloseable {
     public Optional<Definition> findDefinitionAt(Path file, Position pos) throws IOException {
         refresh(file);
         return resolver.findDefinitionAt(file, pos);
+    }
+
+    /**
+     * {@code search_symbols} — a pure name search over the live (overlay-aware, phantom-free) index,
+     * each hit paired with its declaring path. Refreshes for parity with {@link #declarations}; ranking
+     * + filtering are the caller's (off-thread) concern.
+     */
+    public List<SymbolHit> searchSymbols(String query) throws IOException {
+        refresh(null);
+        List<SymbolHit> hits = new ArrayList<>();
+        for (Symbol s : store.search(query)) {
+            hits.add(new SymbolHit(s, fileOf(s)));
+        }
+        return hits;
+    }
+
+    /**
+     * {@code find_references} by use-site position (go-to-refs): resolve the occurrence at {@code pos}
+     * to its declaration, map that back to an in-store {@link Symbol}, then serve its references. An
+     * unresolved site or an external target (no in-store symbol) yields an empty result.
+     */
+    public References findReferencesAt(Path file, Position pos) throws IOException {
+        refresh(file);
+        Optional<Definition> def = resolver.findDefinitionAt(file, pos);
+        if (def.isEmpty()) {
+            return new References(List.of(), List.of());
+        }
+        Optional<Symbol> target = store.symbol(def.get().moniker());
+        if (target.isEmpty()) {
+            return new References(List.of(), List.of());
+        }
+        return resolver.findReferences(target.get());
     }
 
     /** {@code supertypes(target)} — direct EXTENDS/IMPLEMENTS (+ OVERRIDES for a method). */

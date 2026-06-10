@@ -50,3 +50,18 @@ Write failing tests + transcripts → **STOP for review** → implement → veri
 ## Done when
 - tests green · native green · all three tools answer over MCP, context-bearing + token-bounded ·
   `search_symbols` p95 < 50 ms / find_* p95 < 200 ms preserved (no regression vs M1).
+
+## As built (deviations from the plan, decided with the user)
+- **Target selection promoted to the query layer, not the tool layer.** The name→declarations
+  selector is `QueryService.resolveTargets(symbol, deadline)` over the new pure
+  `jcma.query.QualifiedName` (alongside `SymbolRanking`), so the §6 tools **and** the CLI
+  `def`/`refs` **and** the REPL resolve a qualified name identically. `Def`/`Refs`/`Repl` were
+  switched from `declarations` → `resolveTargets`.
+- **Qualified filtering is suffix-anchored, segment-exact — not `String.contains`.** A dotted
+  `symbol` matches iff its `.`-split segments are a contiguous *tail* of the moniker's name-path
+  (package/type/member, descriptor + `~` stripped). So `Circle.area` ✗ `…/Circles/MyAwesomeCircle`
+  (substring false-positive) and ✗ `…/Shape` (wrong enclosing type), two real `Circle`s are honest
+  multi-match (narrow with `shapes.Circle.area`), a full FQN is the maximal suffix (unique up to
+  overloads — overloads share a name-path; position mode separates them).
+- `Shaping.references` was split into `referenceHeader` + `referenceSection` + `unconfirmedTail`
+  so the multi-match path (one section per declaration, one shared name-keyed tail) reuses it.

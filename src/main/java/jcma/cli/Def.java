@@ -63,7 +63,7 @@ final class Def {
 
     private static int bySymbol(QueryService svc, String symbol, Duration deadline, PrintStream out, PrintStream err)
             throws IOException, QueryTimeoutException {
-        List<Symbol> targets = svc.declarations(symbol, deadline);
+        List<Symbol> targets = svc.resolveTargets(symbol, deadline);
         if (targets.isEmpty()) {
             err.println("jcma: no declaration named '" + symbol + "' in the index");
             return 1;

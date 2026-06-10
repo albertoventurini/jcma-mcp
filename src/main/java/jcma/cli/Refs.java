@@ -50,7 +50,7 @@ final class Refs {
         }
         try (QueryService svc = new QueryService(
                 AnalysisSession.open(indexDir, Workspace.discover(repo), Metrics.noop()))) {
-            List<Symbol> targets = svc.declarations(symbol, deadline);
+            List<Symbol> targets = svc.resolveTargets(symbol, deadline);
             if (targets.isEmpty()) {
                 err.println("jcma: no declaration named '" + symbol + "' in the index");
                 return 1;

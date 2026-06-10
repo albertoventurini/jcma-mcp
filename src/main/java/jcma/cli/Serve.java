@@ -10,7 +10,11 @@ import jcma.mcp.McpServer;
 import jcma.mcp.ToolRegistry;
 import jcma.obs.Metrics;
 import jcma.query.QueryService;
+import jcma.response.BudgetPolicy;
 import jcma.session.AnalysisSession;
+import jcma.tools.FindDefinitionTool;
+import jcma.tools.FindReferencesTool;
+import jcma.tools.SearchSymbolsTool;
 import jcma.workspace.IndexLayout;
 import jcma.workspace.Reconciler;
 import jcma.workspace.TreeScanSource;
@@ -65,9 +69,13 @@ final class Serve {
 
         Session session = new Session();
         ToolRegistry registry = new ToolRegistry();
+        BudgetPolicy budget = BudgetPolicy.defaultPolicy(metrics);
         registry.register(new HealthTool(() -> session.svc == null
                 ? "jcma: not yet indexed"
                 : "ok — " + repo + " indexed and ready"));
+        registry.register(new FindDefinitionTool(() -> session.svc, budget));
+        registry.register(new FindReferencesTool(() -> session.svc, budget));
+        registry.register(new SearchSymbolsTool(() -> session.svc, budget));
 
         // Pause-to-index: synchronous, lazy on the first tools/call, with a one-time stderr note.
         Runnable bootstrap = () -> {

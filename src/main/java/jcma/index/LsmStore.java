@@ -19,6 +19,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
 import java.util.zip.CRC32;
@@ -170,6 +171,29 @@ public final class LsmStore implements AutoCloseable {
             }
         }
         return false;
+    }
+
+    /**
+     * The live declaration for {@code moniker} — the overlay's if the file is overlaid, else the base
+     * row whose file is not overlaid (excludes phantoms / overlaid-away rows). Mirrors {@link
+     * #contains}; Tier-2 position-mode {@code find_references} uses it to map a resolved decl's moniker
+     * back to its graph {@link Symbol}.
+     */
+    public Optional<Symbol> symbol(String moniker) {
+        Symbol overlaid = ovSymbols.get(moniker);
+        if (overlaid != null) {
+            return Optional.of(overlaid);
+        }
+        if (baseSym != null) {
+            OptionalInt id = baseSym.idOf(moniker);
+            if (id.isPresent()) {
+                Symbol s = baseSym.symbol(id.getAsInt());
+                if (s.fileId() >= 0 && !edited.containsKey(s.fileId())) {
+                    return Optional.of(s);
+                }
+            }
+        }
+        return Optional.empty();
     }
 
     /** Outgoing edges of {@code moniker} over {@code base ∪ overlay − tombstones}. */

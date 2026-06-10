@@ -3,16 +3,21 @@ package jcma.query;
 import jcma.engine.Position;
 import jcma.index.MonikerEdge;
 import jcma.index.Symbol;
+import jcma.index.SymbolKind;
 import jcma.resolve.Definition;
 import jcma.resolve.References;
 import jcma.session.AnalysisSession;
+import jcma.session.SymbolHit;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -90,6 +95,25 @@ public final class QueryService implements AutoCloseable {
         return execute(() -> session.declarations(name), deadline);
     }
 
+    /**
+     * Resolve a (optionally qualified or fully-qualified) {@code symbol} to its target declarations —
+     * the one selector every surface shares (the §6 tools, the CLI {@code def}/{@code refs}, the REPL).
+     * The last dotted segment is the simple name looked up via {@link #declarations}; the typed name as
+     * a whole then suffix-anchors against each candidate's moniker ({@link QualifiedName#matches}). A
+     * bare name keeps every declaration of that name; a qualified name narrows. The (pure) filter runs
+     * off the worker thread — only the {@code declarations} lookup needs the single-writer worker.
+     */
+    public List<Symbol> resolveTargets(String symbol, Duration deadline) throws QueryTimeoutException, IOException {
+        String simple = symbol.substring(symbol.lastIndexOf('.') + 1);
+        List<Symbol> targets = new ArrayList<>();
+        for (Symbol s : declarations(simple, deadline)) {
+            if (QualifiedName.matches(s.moniker(), symbol)) {
+                targets.add(s);
+            }
+        }
+        return targets;
+    }
+
     public References findReferences(Symbol target, Duration deadline) throws QueryTimeoutException, IOException {
         return execute(() -> session.findReferences(target), deadline);
     }
@@ -101,6 +125,30 @@ public final class QueryService implements AutoCloseable {
     public Optional<Definition> findDefinitionAt(Path file, Position pos, Duration deadline)
             throws QueryTimeoutException, IOException {
         return execute(() -> session.findDefinitionAt(file, pos), deadline);
+    }
+
+    /**
+     * {@code search_symbols} — run the index name search on the worker thread (it refreshes, so it
+     * holds the single-writer invariant), then off-thread filter by {@code kind} (if non-null), order by
+     * {@link SymbolRanking#byRelevance}, and truncate to {@code limit}.
+     */
+    public List<SymbolHit> searchSymbols(String query, SymbolKind kind, int limit, Duration deadline)
+            throws QueryTimeoutException, IOException {
+        List<SymbolHit> hits = execute(() -> session.searchSymbols(query), deadline);
+        Stream<SymbolHit> stream = hits.stream();
+        if (kind != null) {
+            stream = stream.filter(h -> h.symbol().kind() == kind);
+        }
+        return stream
+                .sorted(Comparator.comparing(SymbolHit::symbol, SymbolRanking.byRelevance(query)))
+                .limit(limit)
+                .toList();
+    }
+
+    /** {@code find_references} by use-site position (go-to-refs). */
+    public References findReferencesAt(Path file, Position pos, Duration deadline)
+            throws QueryTimeoutException, IOException {
+        return execute(() -> session.findReferencesAt(file, pos), deadline);
     }
 
     public List<MonikerEdge> supertypes(Symbol target, Duration deadline) throws QueryTimeoutException, IOException {

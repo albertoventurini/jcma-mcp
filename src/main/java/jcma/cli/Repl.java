@@ -99,7 +99,7 @@ final class Repl {
                     err.println("usage: refs <symbol> [--deadline <ms>]");
                     return;
                 }
-                List<Symbol> targets = svc.declarations(cmd[1], deadline);
+                List<Symbol> targets = svc.resolveTargets(cmd[1], deadline);
                 if (targets.isEmpty()) {
                     err.println("no declaration named '" + cmd[1] + "' in the index");
                     return;
@@ -152,7 +152,7 @@ final class Repl {
     /** Resolve {@code symbol} to its declaration(s) and apply {@code action} to each; report if none. */
     private static void forEachDeclaration(QueryService svc, String symbol, Duration deadline, PrintStream out,
             PrintStream err, ThrowingConsumer<Symbol> action) throws Exception {
-        List<Symbol> targets = svc.declarations(symbol, deadline);
+        List<Symbol> targets = svc.resolveTargets(symbol, deadline);
         if (targets.isEmpty()) {
             err.println("no declaration named '" + symbol + "' in the index");
             return;

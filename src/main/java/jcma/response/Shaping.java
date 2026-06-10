@@ -17,6 +17,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -82,9 +83,18 @@ public final class Shaping {
     /**
      * A {@code find_references} answer: a {@code Total refs: N across M files} header (the sacred count,
      * always first), one {@link RefGroupFragment} per group, then an {@link UnconfirmedTailFragment}
-     * iff there is a non-exhaustive tail.
+     * iff there is a non-exhaustive tail. Single-sourced from {@link #referenceSection} +
+     * {@link #unconfirmedTail} so the multi-target tool path (one section per declaration, one shared
+     * tail) reuses the very same assembly.
      */
     public static List<Fragment> references(References refs) {
+        List<Fragment> out = new ArrayList<>(referenceSection(referenceHeader(refs), refs));
+        unconfirmedTail(refs).ifPresent(out::add);
+        return out;
+    }
+
+    /** The {@code Total refs: N across M files} header for {@code refs} (the sacred count). */
+    public static String referenceHeader(References refs) {
         int total = 0;
         Set<String> files = new LinkedHashSet<>();
         for (ReferenceGroup g : refs.groups()) {
@@ -93,20 +103,29 @@ public final class Shaping {
                 files.add(r.file().toString());
             }
         }
+        return refsHeader(total, files.size());
+    }
 
+    /** A {@code headerText} {@link TextFragment} followed by one {@link RefGroupFragment} per group (no tail). */
+    public static List<Fragment> referenceSection(String headerText, References refs) {
         List<Fragment> out = new ArrayList<>();
-        out.add(new TextFragment(refsHeader(total, files.size())));
+        out.add(new TextFragment(headerText));
         for (ReferenceGroup g : refs.groups()) {
             out.add(refGroup(g));
         }
-        if (refs.hasUnconfirmedTail()) {
-            List<String> lines = new ArrayList<>(refs.unconfirmed().size());
-            for (UnconfirmedRef u : refs.unconfirmed()) {
-                lines.add(u.file() + ":" + u.range().startLine() + "  " + u.snippet() + "  [" + u.cause() + "]");
-            }
-            out.add(new UnconfirmedTailFragment(refs.unconfirmed().size(), lines));
-        }
         return out;
+    }
+
+    /** The non-exhaustive {@link UnconfirmedTailFragment} for {@code refs}, or empty when the set is exhaustive. */
+    public static Optional<UnconfirmedTailFragment> unconfirmedTail(References refs) {
+        if (!refs.hasUnconfirmedTail()) {
+            return Optional.empty();
+        }
+        List<String> lines = new ArrayList<>(refs.unconfirmed().size());
+        for (UnconfirmedRef u : refs.unconfirmed()) {
+            lines.add(u.file() + ":" + u.range().startLine() + "  " + u.snippet() + "  [" + u.cause() + "]");
+        }
+        return Optional.of(new UnconfirmedTailFragment(refs.unconfirmed().size(), lines));
     }
 
     /** The always-present total header: {@code Total refs: N across M files}. */
