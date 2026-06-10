@@ -7,6 +7,7 @@ import jcma.mcp.json.JsonValue.JsonArray;
 import jcma.mcp.json.JsonValue.JsonObject;
 import jcma.mcp.json.JsonWriter;
 import jcma.obs.Metrics;
+import jcma.response.ToolResult;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -145,7 +146,7 @@ public final class McpServer {
         }
         JsonObject content = JsonObject.empty()
                 .with("type", JsonValue.of("text"))
-                .with("text", JsonValue.of(toolResult.text()));
+                .with("text", JsonValue.of(toolResult.render()));
         return result(id, JsonObject.empty()
                 .with("content", new JsonArray(List.of(content)))
                 .with("isError", JsonValue.of(toolResult.isError())));

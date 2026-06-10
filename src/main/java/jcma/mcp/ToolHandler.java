@@ -1,6 +1,7 @@
 package jcma.mcp;
 
 import jcma.mcp.json.JsonValue;
+import jcma.response.ToolResult;
 
 /**
  * One MCP tool, the seam between the {@link McpServer} dispatch loop and the §6 query tools (added in

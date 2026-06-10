@@ -507,4 +507,38 @@ java-lsp/                      (consider renaming, e.g. jcma/)
     + the jimage size, **once per startup** on a cache miss. At that size xxHash64's fixed
     setup/avalanche overhead gives no edge, and FNV-1a is simpler and at least as efficient — so each
     hash is matched to its input size rather than unified for its own sake.
+- **Agent-response shaping + token budget — *decided (M2 Task-03)*:** every tool result is a list of
+  typed fragments rendered to one MCP `{type:"text"}` block (`jcma.response.ToolResult`), shaped
+  (`jcma.response.Shaping`) and token-bounded behind a **swappable, instrumented** policy
+  (`jcma.response.BudgetPolicy`, mirroring `CompactionPolicy`: `manual()` ↔ `capped(...)` factories).
+  - **Token estimate:** `ceil(chars/4)` — no tokenizer dependency, native-clean, monotone in length.
+    Caps are expressed in **tokens** (the agent's currency); internal compares use this estimate.
+  - **Symbol display:** render from the precomputed `signature`; degrade via `display(sig, moniker)`
+    (signature if non-null, else the moniker with a leading `~` phantom-marker stripped — mirrors
+    `EdgeResolver.display`). Monikers are SCIP-style/build-only and **never** parsed back to FQN/kind.
+    `kind` is carried only on the `Symbol` path; `Shaping.symbol(Symbol, Path)` takes a caller-resolved
+    path (a `Symbol` has only a `fileId`) so **no raw `fileId` ever reaches the agent**.
+  - **Truncation strategy — *revised from the task plan after review*:** the original "drop whole
+    ref-groups + `+N more` marker" was **rejected** as lossy — for `find_references` the count and the
+    set of locations are the decision-/navigation-bearing data; dropping references can cause wrong
+    agent decisions (rename safety, blast radius). Adopted instead: **counts sacred, snippets elastic**.
+    A `find_references` answer always opens with a `Total refs: N across M files` header (the exhaustive
+    count, never wrong). Over-cap, fidelity degrades but the reference set never does:
+    (1) **drop snippet previews**, keep every `file:line` + count (lossless — a snippet is re-fetchable
+    by reading the kept location); (2) **roll up to per-file counts** (`path: N refs`) — lossy on exact
+    lines but still file-navigable; (3) when even the file summary busts the cap, return it **over budget,
+    lossless** with an advisory to paginate/narrow (no file is ever silently dropped). Full fidelity
+    keeps M1's **enclosing-symbol grouping** ("called from `X`"); the regroup-by-file happens only on
+    degrade. The non-exhaustive unconfirmed-tail header is always kept.
+  - **Pagination is the hard bound for the tail — *deferred to tasks 4–7*:** a hard token bound *and*
+    zero reference loss can't both come from a post-hoc transform; `find_references` `offset`/`limit`
+    (a query concern) closes the pathological tail. Task-03 leaves the seam (advisory note + true total);
+    until then the cap is advisory at the extreme, by design (correctness over strict bounding).
+  - **Per-tool caps — *provisional/uncalibrated*:** one generous `DEFAULT_CAP` (~4000 tokens ≈ 16k
+    chars) now, keyed by tool name via `capped(perToolCaps, defaultCap, metrics)`. The per-tool table +
+    corpus calibration are deferred to tasks 4–7 (`calibrate-targets-from-failure-modes`).
+  - **Instrumented** at the per-result boundary (coarse — never per fragment/token):
+    `response.budget.{pre_tokens, post_tokens, truncated, applied, bypassed}` + a `response.budget`
+    timer; overhead proven within noise of `Metrics.noop()` (`BudgetOverheadTest`). An `isError` result
+    **bypasses** budgeting and is returned verbatim.
 - **Exact navigation-correctness bar** for the M0 go/fall-back gate.

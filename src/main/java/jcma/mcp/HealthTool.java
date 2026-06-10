@@ -2,6 +2,7 @@ package jcma.mcp;
 
 import jcma.mcp.json.JsonValue;
 import jcma.mcp.json.JsonValue.JsonObject;
+import jcma.response.ToolResult;
 
 import java.util.function.Supplier;
 
