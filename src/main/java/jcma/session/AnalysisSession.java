@@ -50,11 +50,14 @@ public final class AnalysisSession implements AutoCloseable {
     private final FreshnessSource source;
     private final Cascade cascade;
     private final Path repoRoot;
+    // True when opened read-only: refresh() is suppressed (its reindex/cascade are the write path) so
+    // the session only observes the persisted graph, while the resolver still resolves into heap.
+    private final boolean readOnly;
 
     private Set<Path> lastInvalidated = Set.of();
 
     private AnalysisSession(LsmStore store, FileTable fileTable, EdgeResolver resolver,
-            FreshnessGuard guard, FreshnessSource source, Cascade cascade, Path repoRoot) {
+            FreshnessGuard guard, FreshnessSource source, Cascade cascade, Path repoRoot, boolean readOnly) {
         this.store = store;
         this.fileTable = fileTable;
         this.resolver = resolver;
@@ -62,6 +65,7 @@ public final class AnalysisSession implements AutoCloseable {
         this.source = source;
         this.cascade = cascade;
         this.repoRoot = repoRoot;
+        this.readOnly = readOnly;
     }
 
     /** Open a session with no proactive change producer — the on-access backstop covers freshness. */
@@ -87,7 +91,33 @@ public final class AnalysisSession implements AutoCloseable {
         FreshnessGuard guard = new FreshnessGuard(repoRoot, indexDir, fileTable, store, indexer, source,
                 Workspace.discoverSourceSets(repoRoot), metrics);
         Cascade cascade = new Cascade(guard, resolver, store);
-        return new AnalysisSession(store, fileTable, resolver, guard, source, cascade, repoRoot);
+        return new AnalysisSession(store, fileTable, resolver, guard, source, cascade, repoRoot, false);
+    }
+
+    /**
+     * Open a <b>read-only</b> session (M2): backed by a {@link LsmStore#openReadOnly read-only store}
+     * and with the freshness {@code refresh()} write path disabled, so a query process can observe a
+     * concurrent writer's persisted graph without mutating the on-disk index. The resolver still
+     * lazy-resolves into the heap-only store, so {@code find_references}/{@code find_definition} return
+     * full answers; only persistence is suppressed.
+     */
+    public static AnalysisSession openReadOnly(Path indexDir, Workspace workspace, Metrics metrics)
+            throws IOException {
+        LsmStore store = LsmStore.openReadOnly(indexDir, metrics);
+        Path usagePath = indexDir.resolve(UsageNameIndexer.FILE_NAME);
+        UsageNameIndex usageIndex = Files.exists(usagePath) ? UsageNameIndex.load(usagePath) : null;
+        FileTable fileTable = FileTable.load(indexDir);
+        Indexer indexer = new Indexer(metrics);
+        AnalysisEngine engine = new JavaParserEngine(workspace);
+        Path repoRoot = workspace.projectRoot().toAbsolutePath().normalize();
+
+        // No proactive change producer: read-only never reindexes, so there is nothing to drain.
+        FreshnessSource source = FreshnessSource.none();
+        EdgeResolver resolver = EdgeResolver.over(store, usageIndex, fileTable, engine, indexer, repoRoot, metrics);
+        FreshnessGuard guard = new FreshnessGuard(repoRoot, indexDir, fileTable, store, indexer, source,
+                Workspace.discoverSourceSets(repoRoot), metrics);
+        Cascade cascade = new Cascade(guard, resolver, store);
+        return new AnalysisSession(store, fileTable, resolver, guard, source, cascade, repoRoot, true);
     }
 
     // ------------------------------------------------------------------ queries (refresh → cascade → serve)
@@ -166,6 +196,9 @@ public final class AnalysisSession implements AutoCloseable {
      * the query serves an answer.
      */
     private void refresh(Path targetFile) throws IOException {
+        if (readOnly) {
+            return; // the cascade reindexes + tombstones (the write path); a read-only session only observes
+        }
         Set<Path> changed = new java.util.HashSet<>(source.drainChanged());
         if (targetFile != null) {
             changed.add(targetFile.toAbsolutePath().normalize());

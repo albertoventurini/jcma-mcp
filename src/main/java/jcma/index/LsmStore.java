@@ -86,13 +86,18 @@ public final class LsmStore implements AutoCloseable {
     private DataOutputStream logOut;
     private long logBytes;
 
-    private LsmStore(Path indexDir, CompactionPolicy policy, Metrics metrics) {
+    // True for a read-only open: every mutation stays in this process's heap overlay; the durable log
+    // and base segments are never written, so a query process can coexist with a live writer.
+    private final boolean readOnly;
+
+    private LsmStore(Path indexDir, CompactionPolicy policy, Metrics metrics, boolean readOnly) {
         this.symPath = indexDir.resolve(SymbolStore.FILE_NAME);
         this.edgePath = indexDir.resolve(Csr.FILE_NAME);
         this.triPath = indexDir.resolve(TrigramIndex.FILE_NAME);
         this.logPath = indexDir.resolve(OVERLAY_LOG);
         this.policy = policy;
         this.metrics = metrics;
+        this.readOnly = readOnly;
     }
 
     /** Open the index at {@code indexDir} with the default policy ({@link CompactionPolicy#relativeToBase}). */
@@ -106,13 +111,30 @@ public final class LsmStore implements AutoCloseable {
     }
 
     /**
+     * Open the index at {@code indexDir} <b>read-only</b> (M2): mmap the base + replay the overlay log
+     * into the in-memory overlay, but never append to the log, never truncate a torn tail, and reject
+     * {@link #compact()}. {@link #applyEdit} mutates only this process's heap overlay — nothing reaches
+     * disk — so a query process can observe a live writer's persisted graph (and lazily resolve into its
+     * own heap) without contending for the {@link jcma.workspace.IndexLock write lock} or risking
+     * corruption.
+     */
+    public static LsmStore openReadOnly(Path indexDir, Metrics metrics) throws IOException {
+        Files.createDirectories(indexDir);
+        LsmStore store = new LsmStore(indexDir, CompactionPolicy.manual(), metrics, true);
+        store.loadBase();
+        store.replayLog(); // rebuilds the overlay from disk; never truncates (see replayLog)
+        // Deliberately no openLogForAppend: a read-only store never opens the log for writing.
+        return store;
+    }
+
+    /**
      * Open the index at {@code indexDir}: mmap the base segments if present (else an empty base),
      * then replay {@code overlay.log} to rebuild the in-memory overlay (dropping any torn tail).
      * Compaction + reopen-replay timings are recorded into {@code metrics}.
      */
     public static LsmStore open(Path indexDir, CompactionPolicy policy, Metrics metrics) throws IOException {
         Files.createDirectories(indexDir);
-        LsmStore store = new LsmStore(indexDir, policy, metrics);
+        LsmStore store = new LsmStore(indexDir, policy, metrics, false);
         store.loadBase();
         store.replayLog();
         store.openLogForAppend();
@@ -128,6 +150,9 @@ public final class LsmStore implements AutoCloseable {
      */
     public void applyEdit(FileIndex content) throws IOException {
         index(content);
+        if (readOnly) {
+            return; // heap-only: a read-only store never writes the durable log nor compacts
+        }
         writeRecord(content);
         if (policy.shouldCompact(logBytes, baseBytes(), edited.size())) {
             compact();
@@ -317,6 +342,9 @@ public final class LsmStore implements AutoCloseable {
 
     /** Force a compaction: fold the overlay into a fresh base (all three segments) and clear the log. */
     public void compact() throws IOException {
+        if (readOnly) {
+            throw new IllegalStateException("compaction is not allowed on a read-only LsmStore");
+        }
         long startNanos = System.nanoTime();
         // 1. Gather the live symbol set + edge set: base content (minus overlaid files) ∪ overlay.
         Map<String, Symbol> symByMoniker = new HashMap<>();
@@ -500,7 +528,9 @@ public final class LsmStore implements AutoCloseable {
         }
         metrics.counter("replay.records").add(records);
         metrics.timer("replay").record(System.nanoTime() - startNanos);
-        if (validLen != data.length) {
+        // A read-only store must not write — leave a torn tail in place (it was dropped from the
+        // overlay above either way); the owning writer will truncate it on its next open.
+        if (validLen != data.length && !readOnly) {
             try (FileChannel ch = FileChannel.open(logPath, StandardOpenOption.WRITE)) {
                 ch.truncate(validLen);
             }

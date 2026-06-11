@@ -14,6 +14,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.stream.Stream;
+import jcma.index.SymbolStore;
 import jcma.workspace.IndexLayout;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -78,12 +79,16 @@ class ServeLifecycleTest {
             assertEquals(0, handshake.exit(), handshake.err());
             assertTrue(handshake.out().contains("2025-06-18"), "initialize answered: " + handshake.out());
             assertTrue(handshake.out().contains("health"), "tools/list answered: " + handshake.out());
-            assertFalse(Files.isDirectory(indexDir), "the handshake must not build an index");
+            // The write lock creates an empty indexDir (to hold index.lock) at serve startup, so the
+            // proxy for "no indexing happened" is the absence of the index segment, not of the dir.
+            assertFalse(Files.exists(indexDir.resolve(SymbolStore.FILE_NAME)),
+                    "the handshake must not build an index");
 
             // Run B: a tools/call lazily builds the index before answering.
             Run call = dispatch(INIT + "\n" + CALL_HEALTH + "\n", "serve", "-C", repo.toString());
             assertEquals(0, call.exit(), call.err());
-            assertTrue(Files.isDirectory(indexDir), "the first tools/call builds the index");
+            assertTrue(Files.exists(indexDir.resolve(SymbolStore.FILE_NAME)),
+                    "the first tools/call builds the index");
             assertTrue(call.err().contains("indexing"), "a one-time stderr indexing note: " + call.err());
             assertTrue(call.out().contains("\"isError\":false"), "the tool call returns a result: " + call.out());
         } finally {

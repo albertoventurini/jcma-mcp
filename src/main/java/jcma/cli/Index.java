@@ -8,6 +8,8 @@ import jcma.index.SourceSet;
 import jcma.obs.Metrics;
 import jcma.obs.Timer;
 import jcma.workspace.IndexLayout;
+import jcma.workspace.IndexLock;
+import jcma.workspace.IndexLockedException;
 import jcma.workspace.Reconciler;
 import jcma.workspace.Workspace;
 
@@ -47,7 +49,8 @@ final class Index {
             roots.add(new SourceRoot(repo, SourceSet.MAIN));
         }
 
-        try {
+        // Single-writer: indexing mutates the store; fail fast if a live serve/another writer owns it.
+        try (IndexLock ignored = IndexLock.acquire(indexDir)) {
             Metrics metrics = Metrics.create();
             Reconciler.ReindexStats stats;
             try (LsmStore store = LsmStore.open(indexDir, CompactionPolicy.manual(), metrics)) {
@@ -61,6 +64,9 @@ final class Index {
                     .getOrDefault("compaction", new Timer.Snapshot(0, 0, 0));
             out.printf("compaction: %.1f ms%n", compaction.totalNanos() / 1e6);
             return 0;
+        } catch (IndexLockedException e) {
+            err.println("jcma: " + e.getMessage());
+            return 1;
         } catch (Exception e) {
             err.println("jcma: index failed: " + e.getMessage());
             return 1;

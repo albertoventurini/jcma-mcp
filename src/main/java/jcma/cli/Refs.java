@@ -8,7 +8,7 @@ import jcma.resolve.Ref;
 import jcma.resolve.ReferenceGroup;
 import jcma.resolve.References;
 import jcma.resolve.UnconfirmedRef;
-import jcma.session.AnalysisSession;
+import jcma.workspace.FreshnessSource;
 import jcma.workspace.IndexLayout;
 import jcma.workspace.Workspace;
 
@@ -48,8 +48,9 @@ final class Refs {
             err.println("jcma: no index for " + repo + " — run `jcma index` first");
             return 1;
         }
-        try (QueryService svc = new QueryService(
-                AnalysisSession.open(indexDir, Workspace.discover(repo), Metrics.noop()))) {
+        try (QuerySessions.Held held = QuerySessions.open(
+                indexDir, Workspace.discover(repo), FreshnessSource.none(), Metrics.noop(), err)) {
+            QueryService svc = held.service();
             List<Symbol> targets = svc.resolveTargets(symbol, deadline);
             if (targets.isEmpty()) {
                 err.println("jcma: no declaration named '" + symbol + "' in the index");

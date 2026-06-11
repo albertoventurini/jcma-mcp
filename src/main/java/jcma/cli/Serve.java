@@ -5,6 +5,7 @@ import jcma.index.Indexer;
 import jcma.index.LsmStore;
 import jcma.index.SourceRoot;
 import jcma.index.SourceSet;
+import jcma.index.SymbolStore;
 import jcma.mcp.HealthTool;
 import jcma.mcp.McpServer;
 import jcma.mcp.ToolRegistry;
@@ -19,6 +20,8 @@ import jcma.tools.FindDefinitionTool;
 import jcma.tools.FindReferencesTool;
 import jcma.tools.SearchSymbolsTool;
 import jcma.workspace.IndexLayout;
+import jcma.workspace.IndexLock;
+import jcma.workspace.IndexLockedException;
 import jcma.workspace.Reconciler;
 import jcma.workspace.TreeScanSource;
 import jcma.workspace.Workspace;
@@ -56,6 +59,20 @@ final class Serve {
         }
         Path repo = Workspace.projectRoot(cwd);
         Path indexDir = IndexLayout.defaultIndexDir(repo);
+
+        // Single-writer: serve must own the index. Fail fast if another jcma process holds the write
+        // lock — a second writable server would corrupt the shared overlay log + base segments.
+        IndexLock lock;
+        try {
+            lock = IndexLock.acquire(indexDir);
+        } catch (IndexLockedException e) {
+            err.println("jcma: " + e.getMessage());
+            return 1;
+        } catch (java.io.IOException e) {
+            err.println("jcma: serve failed: " + e.getMessage());
+            return 1;
+        }
+
         Workspace workspace = Workspace.discover(repo);
         Metrics metrics = Metrics.create();
         // Per-repo, size-bounded JSON call log — the only persistent per-call trail (the wire carries none).
@@ -89,7 +106,9 @@ final class Serve {
         // Pause-to-index: synchronous, lazy on the first tools/call, with a one-time stderr note.
         Runnable bootstrap = () -> {
             try {
-                boolean cold = !Files.isDirectory(indexDir);
+                // "Cold" = never indexed. The write lock pre-creates indexDir (to hold index.lock), so
+                // the signal is the absence of the base segment, not of the directory.
+                boolean cold = !Files.exists(indexDir.resolve(SymbolStore.FILE_NAME));
                 if (cold) {
                     err.println("jcma: indexing " + repo + " …");
                 }
@@ -126,6 +145,13 @@ final class Serve {
                 } catch (Exception e) {
                     err.println("jcma: warning: failed to close session: " + e.getMessage());
                 }
+            }
+            // Release the write lock only after the session is closed, so nothing mutates the index
+            // between the last close and the lock drop.
+            try {
+                lock.close();
+            } catch (java.io.IOException e) {
+                err.println("jcma: warning: failed to release index lock: " + e.getMessage());
             }
         }
     }

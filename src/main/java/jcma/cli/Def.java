@@ -6,7 +6,7 @@ import jcma.obs.Metrics;
 import jcma.query.QueryService;
 import jcma.query.QueryTimeoutException;
 import jcma.resolve.Definition;
-import jcma.session.AnalysisSession;
+import jcma.workspace.FreshnessSource;
 import jcma.workspace.IndexLayout;
 import jcma.workspace.Workspace;
 
@@ -47,8 +47,9 @@ final class Def {
             err.println("jcma: no index for " + repo + " — run `jcma index` first");
             return 1;
         }
-        try (QueryService svc = new QueryService(
-                AnalysisSession.open(indexDir, Workspace.discover(repo), Metrics.noop()))) {
+        try (QuerySessions.Held held = QuerySessions.open(
+                indexDir, Workspace.discover(repo), FreshnessSource.none(), Metrics.noop(), err)) {
+            QueryService svc = held.service();
             return a.length == 2
                     ? bySymbol(svc, a[1], deadline, out, err)
                     : byPosition(svc, a[1], a[2], deadline, out, err);

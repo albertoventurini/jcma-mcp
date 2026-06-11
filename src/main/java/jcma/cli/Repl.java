@@ -10,7 +10,6 @@ import jcma.resolve.Ref;
 import jcma.resolve.ReferenceGroup;
 import jcma.resolve.References;
 import jcma.resolve.UnconfirmedRef;
-import jcma.session.AnalysisSession;
 import jcma.workspace.FreshnessSource;
 import jcma.workspace.IndexLayout;
 import jcma.workspace.TreeScanSource;
@@ -55,8 +54,9 @@ final class Repl {
         }
         Workspace workspace = Workspace.discover(repo);
         FreshnessSource source = new TreeScanSource(workspace.sourceRoots());
-        try (QueryService svc = new QueryService(AnalysisSession.open(indexDir, workspace, source, Metrics.noop()));
+        try (QuerySessions.Held held = QuerySessions.open(indexDir, workspace, source, Metrics.noop(), err);
                 Terminal terminal = TerminalBuilder.terminal()) {
+            QueryService svc = held.service();
             out.println("jcma repl — commands: refs <symbol> | def <symbol> | def <file> <line:col> "
                     + "| supertypes <symbol> | quit   (any query takes an optional --deadline <ms>)");
 
