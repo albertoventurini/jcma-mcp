@@ -33,14 +33,15 @@ Spikes under `milestones/m0-spike/` stay intact.
   `nativeCompile` spike proving the SDK builds clean — not assumed.)*
 - **MCP transport = newline-delimited JSON over stdio** (one JSON-RPC object per line, as the spike
   loop framed it), launched as a subprocess by Claude Code.
-- **Pause-to-index on launch (background-indexing deferred to M3).** The server uses the persisted
+- **Pause-to-index on launch (background-indexing deferred to M4).** The server uses the persisted
   index; if it is **missing/stale it builds synchronously at startup** (reusing the M1 `Indexer` +
   `Reconciler`), *after* the `initialize` response but *before* the first `tools/call` is served — so
   the handshake stays prompt and the first answer is always against a fresh index. Warm = `mmap +
   go`. Justified by M1 actuals: a cold parse-only scan is ~0.29 s (commons-lang) / ~0.48 s (jackson
   slice) — sub-second on medium repos. The **start-instantly-and-index-in-background** state machine
-  earns its complexity only on large (~1M LOC) repos and is M3's "large-repo perf" charter, deferred
-  by measurement, not assumed.
+  earns its complexity only on large (~1M LOC) repos and is M4's "large-repo perf" charter, deferred
+  by measurement, not assumed. *(M3 became the `grep_java` degrade-to-text milestone — see
+  `milestones/M3/`; large-repo perf moved to M4.)*
 - **Transitive type hierarchy** (not direct-only). M1's `supertypes`/`subtypes` return direct edges;
   M2's `find_subtypes`/`find_supertypes`/`find_implementations` walk them transitively with a depth
   bound (task 5).

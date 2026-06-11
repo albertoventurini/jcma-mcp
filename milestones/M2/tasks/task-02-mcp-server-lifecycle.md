@@ -5,7 +5,7 @@
 ## Decisions locked (overview)
 - **Newline-delimited JSON-RPC over stdio** (one object per line), hand-rolled on task-1 JSON.
 - **Pause-to-index on launch** — synchronous build-if-missing/stale, **after** the `initialize`
-  reply but **before** the first `tools/call`. Background indexing is deferred to M3.
+  reply but **before** the first `tools/call`. Background indexing is deferred to M4.
 
 ## Prerequisites (read first, fresh session)
 - **Done before this:** task-1 (JSON layer).
@@ -59,7 +59,7 @@ Write failing tests + transcripts → **STOP for review** → implement → veri
   build (`Reconciler.reindex`, which subsumes cold-build and warm-reconcile) fires once, guarded,
   at the start of the first `tools/call`. Stderr note: cold → `jcma: indexing <repo> …` then
   `jcma: indexed N file(s), M symbols`; warm → `jcma: index up to date`. No `isError` "retry"
-  dance. Background indexing stays deferred to M3.
+  dance. Background indexing stays deferred to M4.
 - **`initialize` protocolVersion** = **echo the client's, default `2024-11-05`.** Read
   `params.protocolVersion` and echo it back (spec-correct negotiation; our surface uses no
   version-specific features); when absent, advertise the spike's pinned `2024-11-05`.
