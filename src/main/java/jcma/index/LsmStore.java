@@ -14,6 +14,7 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -24,6 +25,8 @@ import java.util.OptionalInt;
 import java.util.Set;
 import java.util.zip.CRC32;
 
+import jcma.engine.TextKind;
+import jcma.engine.TextUnit;
 import jcma.obs.Metrics;
 
 /**
@@ -63,9 +66,18 @@ public final class LsmStore implements AutoCloseable {
 
     private static final java.nio.charset.Charset UTF8 = StandardCharsets.UTF_8;
 
+    /**
+     * The D2 text kinds carried into {@code text.seg} (M3 task-01) — the build toggle's single point
+     * of control. Default = all three; the footprint measurement (2026-06-11) found the inline-scan
+     * corpus affordable, so no kind is excluded. Flip this to narrow coverage without touching the
+     * write/merge logic (it filters at {@link TextIndex#write}).
+     */
+    private static final Set<TextKind> TEXT_KINDS = EnumSet.allOf(TextKind.class);
+
     private final Path symPath;
     private final Path edgePath;
     private final Path triPath;
+    private final Path textPath;
     private final Path logPath;
     private final CompactionPolicy policy;
     private final Metrics metrics;
@@ -74,6 +86,7 @@ public final class LsmStore implements AutoCloseable {
     private SymbolStore baseSym;
     private Csr baseCsr;
     private TrigramIndex baseTri;
+    private TextIndex baseText;
 
     // The in-memory overlay (moniker space). `edited` is the per-file source of truth (its keys are
     // the tombstoned/superseded files); the adjacency maps are its query index.
@@ -94,6 +107,7 @@ public final class LsmStore implements AutoCloseable {
         this.symPath = indexDir.resolve(SymbolStore.FILE_NAME);
         this.edgePath = indexDir.resolve(Csr.FILE_NAME);
         this.triPath = indexDir.resolve(TrigramIndex.FILE_NAME);
+        this.textPath = indexDir.resolve(TextIndex.FILE_NAME);
         this.logPath = indexDir.resolve(OVERLAY_LOG);
         this.policy = policy;
         this.metrics = metrics;
@@ -283,6 +297,33 @@ public final class LsmStore implements AutoCloseable {
     }
 
     /**
+     * Text search over the live view (M3 task-01): the mmap'd {@link TextIndex} (base, excluding
+     * fileIds currently overlaid) unioned with an in-memory scan of the overlay files' text units,
+     * so results have the same base+overlay fidelity as {@link #search}. A pure passthrough — no
+     * resolve, no deadline-sensitive work.
+     *
+     */
+    public List<TextIndex.TextOccurrence> searchText(String query) {
+        if (query == null || query.isEmpty()) {
+            return List.of();
+        }
+        List<TextIndex.TextOccurrence> out = new ArrayList<>();
+        if (baseText != null) {
+            for (TextIndex.TextOccurrence o : baseText.search(query)) {
+                if (!edited.containsKey(o.fileId())) { // overlaid files are served from the overlay below
+                    out.add(o);
+                }
+            }
+        }
+        for (FileIndex fi : edited.values()) {
+            for (TextUnit u : fi.texts()) {
+                TextIndex.match(u.kind(), fi.fileId(), u.startLine(), u.startCol(), u.text(), query, out);
+            }
+        }
+        return out;
+    }
+
+    /**
      * The live declaration set — base symbols whose file is not overlaid, unioned with the overlay's
      * symbols (overlay wins on moniker). Phantoms ({@code fileId < 0}) are excluded. Tier-2 uses it to
      * map a resolved declaration's {@code file:line} back to its graph moniker.
@@ -390,18 +431,38 @@ public final class LsmStore implements AutoCloseable {
             idEdges.add(new Csr.Edge(idByMoniker.get(e.src()), idByMoniker.get(e.dst()), e.type(), e.occurrence()));
         }
 
+        // 3b. Gather the live D2 text corpus the same way (M3 task-01): base files that are not
+        //     overlaid keep their indexed units (read from the base segment — no re-parse), overlaid
+        //     files (skip tombstones) contribute their current units. Gathered before closeBase().
+        Map<Integer, List<TextUnit>> textByFile = new HashMap<>();
+        if (baseText != null) {
+            for (int fid : baseText.fileIds()) {
+                if (!edited.containsKey(fid)) {
+                    textByFile.put(fid, baseText.unitsOf(fid));
+                }
+            }
+        }
+        for (FileIndex c : edited.values()) {
+            if (!c.texts().isEmpty()) {
+                textByFile.put(c.fileId(), c.texts());
+            }
+        }
+
         // 4. Write the fresh segments to temp files (each fsync's via seg.force()), then atomically
         //    swap them in. Close the old mmaps first so the rename can replace them on any platform.
         Path symTmp = tmp(symPath);
         Path edgeTmp = tmp(edgePath);
         Path triTmp = tmp(triPath);
+        Path textTmp = tmp(textPath);
         SymbolStore.write(symTmp, symList);
         Csr.write(edgeTmp, symList.size(), idEdges);
         TrigramIndex.write(triTmp, entries);
+        TextIndex.write(textTmp, textByFile, TEXT_KINDS);
         closeBase();
         atomicReplace(symTmp, symPath);
         atomicReplace(edgeTmp, edgePath);
         atomicReplace(triTmp, triPath);
+        atomicReplace(textTmp, textPath);
         loadBase();
 
         // 5. The overlay is now in the base; clear it and reset the durable log.
@@ -432,10 +493,14 @@ public final class LsmStore implements AutoCloseable {
             baseSym = SymbolStore.load(symPath);
             baseCsr = Csr.load(edgePath);
             baseTri = TrigramIndex.load(triPath);
+            // Guarded: an index compacted before M3 task-01 has no text.seg; text search is simply
+            // empty there until the next compaction writes one.
+            baseText = Files.exists(textPath) ? TextIndex.load(textPath) : null;
         } else {
             baseSym = null;
             baseCsr = null;
             baseTri = null;
+            baseText = null;
         }
     }
 
@@ -452,6 +517,10 @@ public final class LsmStore implements AutoCloseable {
             baseTri.close();
             baseTri = null;
         }
+        if (baseText != null) {
+            baseText.close();
+            baseText = null;
+        }
     }
 
     private long baseBytes() throws IOException {
@@ -464,6 +533,9 @@ public final class LsmStore implements AutoCloseable {
         }
         if (Files.exists(triPath)) {
             total += Files.size(triPath);
+        }
+        if (Files.exists(textPath)) {
+            total += Files.size(textPath);
         }
         return total;
     }
@@ -550,6 +622,10 @@ public final class LsmStore implements AutoCloseable {
         for (MonikerEdge e : c.edges()) {
             writeEdge(p, e);
         }
+        p.writeInt(c.texts().size());
+        for (TextUnit t : c.texts()) {
+            writeText(p, t);
+        }
         p.flush();
         return baos.toByteArray();
     }
@@ -567,7 +643,16 @@ public final class LsmStore implements AutoCloseable {
         for (int i = 0; i < ne; i++) {
             edges.add(readEdge(in));
         }
-        return new FileIndex(fileId, symbols, edges);
+        // Texts section (M3 task-01). Guarded so a log written before texts existed (no trailing
+        // section) replays as an edit with no text units rather than throwing on EOF.
+        List<TextUnit> texts = new ArrayList<>();
+        if (in.available() > 0) {
+            int nt = in.readInt();
+            for (int i = 0; i < nt; i++) {
+                texts.add(readText(in));
+            }
+        }
+        return new FileIndex(fileId, symbols, edges, texts);
     }
 
     private static void writeSymbol(DataOutputStream p, Symbol s) throws IOException {
@@ -621,6 +706,24 @@ public final class LsmStore implements AutoCloseable {
         int enclosing = in.readInt();
         Occurrence.Role role = Occurrence.Role.byOrdinal(in.readInt());
         return new MonikerEdge(src, dst, type, new Occurrence(occFile, range, enclosing, role));
+    }
+
+    private static void writeText(DataOutputStream p, TextUnit t) throws IOException {
+        p.writeInt(t.kind().ordinal());
+        p.writeInt(t.startLine());
+        p.writeInt(t.startCol());
+        p.writeInt(t.endLine());
+        p.writeInt(t.endCol());
+        writeStr(p, t.text());
+    }
+
+    private static TextUnit readText(DataInputStream in) throws IOException {
+        TextKind kind = TextKind.values()[in.readInt()];
+        int startLine = in.readInt();
+        int startCol = in.readInt();
+        int endLine = in.readInt();
+        int endCol = in.readInt();
+        return new TextUnit(kind, startLine, startCol, endLine, endCol, readStr(in));
     }
 
     private static void writeStr(DataOutputStream p, String s) throws IOException {

@@ -3,11 +3,13 @@ package jcma.session;
 import jcma.engine.AnalysisEngine;
 import jcma.engine.JavaParserEngine;
 import jcma.engine.Position;
+import jcma.engine.TextKind;
 import jcma.index.CompactionPolicy;
 import jcma.index.Indexer;
 import jcma.index.LsmStore;
 import jcma.index.MonikerEdge;
 import jcma.index.Symbol;
+import jcma.index.TextIndex;
 import jcma.index.UsageNameIndex;
 import jcma.index.UsageNameIndexer;
 import jcma.obs.Metrics;
@@ -158,6 +160,32 @@ public final class AnalysisSession implements AutoCloseable {
             hits.add(new SymbolHit(s, fileOf(s)));
         }
         return hits;
+    }
+
+    /**
+     * {@code grep_java} text tier (M3 task-01) — a pure text search over the live (overlay-aware)
+     * index, each hit resolved to its declaring path and labelled by kind. Refreshes for parity with
+     * {@link #searchSymbols}; ranking + shaping are the caller's (off-thread) concern.
+     *
+     */
+    public List<TextHit> searchText(String query) throws IOException {
+        refresh(null);
+        List<TextHit> hits = new ArrayList<>();
+        for (TextIndex.TextOccurrence o : store.searchText(query)) {
+            Path rel = fileTable.pathOf(o.fileId());
+            String file = rel == null ? null : repoRoot.resolve(rel).toString();
+            hits.add(new TextHit(file, o.line(), o.col(), label(o.kind()), o.lineSnippet()));
+        }
+        return hits;
+    }
+
+    /** The agent-facing label for a {@link TextKind} (hyphenated, lower-case). */
+    private static String label(TextKind kind) {
+        return switch (kind) {
+            case STRING_LITERAL -> "string-literal";
+            case COMMENT -> "comment";
+            case JAVADOC -> "javadoc";
+        };
     }
 
     /**

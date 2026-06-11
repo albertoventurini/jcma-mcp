@@ -54,7 +54,11 @@ hole is closed, a scoped redirect becomes always-correct (M3 task-05).
   measured match-count distributions** on a real corpus (commons-lang / this repo) and from
   safe-vs-silent failure behaviour — not round numbers (memory `calibrate-targets-from-failure-modes`).
 - Index footprint: within the §5.1 low-memory budget; **measured**, mirroring the decl-vs-usage
-  trigram split discipline (memory `graph-native-index-design`).
+  trigram split discipline (memory `graph-native-index-design`). **As built (task-01):** the text
+  tier is an **inline-snapshot segment scanned linearly**, *not* a trigram index — the measurement
+  showed a trigram form is Javadoc-dominated and ~2.4× over budget, and a ~3 MB corpus doesn't need
+  sub-linear query. `text.seg` all-three ≈ 411 KB on this repo / ~3.9 MB on commons-lang (≈ the size
+  of the existing whole index). This **reverses D1's "sibling trigram segment"** on that evidence.
 
 ## Tasks (separate files, one per fresh session)
 

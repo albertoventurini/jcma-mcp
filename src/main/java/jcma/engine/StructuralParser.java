@@ -19,6 +19,9 @@ import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.body.RecordDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
+import com.github.javaparser.ast.comments.Comment;
+import com.github.javaparser.ast.expr.StringLiteralExpr;
+import com.github.javaparser.ast.expr.TextBlockLiteralExpr;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -65,7 +68,17 @@ public final class StructuralParser {
         return collect(file).usages();
     }
 
-    /** Parse {@code file} once and expose both projections (declarations + usages). */
+    /**
+     * Parse {@code file} (parse-only) and extract its D2 text corpus — string literals (+ text
+     * blocks), comments, and Javadoc — the input to the text index ({@code text.seg}; M3 task-01).
+     * Mirrors {@link #outline}/{@link #usages} so a cold-index pass gets the third projection from
+     * the same parse, at no extra parse cost.
+     */
+    public List<TextUnit> textUnits(Path file) throws IOException {
+        return collect(file).textUnits();
+    }
+
+    /** Parse {@code file} once and expose all three projections (declarations + usages + text). */
     public Parsed collect(Path file) throws IOException {
         // A fresh JavaParser per call: JavaParser instances are not thread-safe, and indexRepo
         // parses across virtual threads. The shared config is read-only, so sharing it is fine.
@@ -101,6 +114,31 @@ public final class StructuralParser {
                         o.startLine(), o.startCol(), o.endLine(), o.endCol()));
             }
             return out;
+        }
+
+        /**
+         * The file's D2 text units (string literals + text blocks → {@code STRING_LITERAL}; Javadoc
+         * → {@code JAVADOC}; line/block comments → {@code COMMENT}), each with its 1-based range and
+         * searchable text. A unit with no range (synthetic node) is skipped — the index keys on
+         * {@code (fileId, line, col)}, so a position-less unit cannot be reported.
+         */
+        public List<TextUnit> textUnits() {
+            List<TextUnit> out = new ArrayList<>();
+            for (StringLiteralExpr s : cu.findAll(StringLiteralExpr.class)) {
+                add(out, TextKind.STRING_LITERAL, s, s.getValue());
+            }
+            for (TextBlockLiteralExpr t : cu.findAll(TextBlockLiteralExpr.class)) {
+                add(out, TextKind.STRING_LITERAL, t, t.getValue());
+            }
+            for (Comment c : cu.getAllComments()) {
+                add(out, c.isJavadocComment() ? TextKind.JAVADOC : TextKind.COMMENT, c, c.getContent());
+            }
+            return out;
+        }
+
+        private static void add(List<TextUnit> out, TextKind kind, Node n, String text) {
+            n.getRange().ifPresent(r -> out.add(
+                    new TextUnit(kind, r.begin.line, r.begin.column, r.end.line, r.end.column, text)));
         }
     }
 

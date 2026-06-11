@@ -78,14 +78,16 @@ public final class Indexer {
      * root's tag. The tag is packed into {@link Symbol#flags()} (see {@link SourceSet}).
      */
     public FileIndex indexFile(int fileId, Path file, SourceSet sourceSet) throws IOException {
-        FileOutline fo = parser.outline(file);
+        StructuralParser.Parsed parsed = parser.collect(file);
+        FileOutline fo = parsed.outline();
         List<Symbol> symbols = new ArrayList<>();
         List<MonikerEdge> edges = new ArrayList<>();
         String packageMoniker = Moniker.forPackage(fo.packageName());
         for (Outline type : fo.types()) {
             walk(type, packageMoniker, null, fo.packageName(), fileId, sourceSet, symbols, edges);
         }
-        return new FileIndex(fileId, symbols, edges);
+        // Third projection off the same parse (M3 task-01): the D2 text corpus, no extra parse.
+        return new FileIndex(fileId, symbols, edges, parsed.textUnits());
     }
 
     /**

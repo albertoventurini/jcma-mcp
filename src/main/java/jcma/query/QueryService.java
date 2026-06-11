@@ -8,6 +8,7 @@ import jcma.resolve.Definition;
 import jcma.resolve.References;
 import jcma.session.AnalysisSession;
 import jcma.session.SymbolHit;
+import jcma.session.TextHit;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -141,6 +142,22 @@ public final class QueryService implements AutoCloseable {
         }
         return stream
                 .sorted(Comparator.comparing(SymbolHit::symbol, SymbolRanking.byRelevance(query)))
+                .limit(limit)
+                .toList();
+    }
+
+    /**
+     * {@code grep_java} text tier (M3 task-01) — run the pure text search on the worker thread (it
+     * refreshes, holding the single-writer invariant), then off-thread order by {@code (file, line,
+     * col)} and truncate to {@code limit}. A pure passthrough: no resolve, no deadline-sensitive work.
+     */
+    public List<TextHit> searchText(String query, int limit, Duration deadline)
+            throws QueryTimeoutException, IOException {
+        List<TextHit> hits = execute(() -> session.searchText(query), deadline);
+        return hits.stream()
+                .sorted(Comparator.comparing((TextHit h) -> h.file() == null ? "" : h.file())
+                        .thenComparingInt(TextHit::line)
+                        .thenComparingInt(TextHit::col))
                 .limit(limit)
                 .toList();
     }

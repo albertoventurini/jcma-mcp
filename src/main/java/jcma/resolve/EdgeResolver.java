@@ -12,6 +12,7 @@ import jcma.engine.ResolvedRef;
 import jcma.engine.ResolvedTarget;
 import jcma.engine.ResolvedType;
 import jcma.engine.StructuralParser;
+import jcma.engine.TextUnit;
 import jcma.engine.UsageSite;
 import jcma.index.CompactionPolicy;
 import jcma.index.EdgeType;
@@ -98,21 +99,25 @@ public final class EdgeResolver implements AutoCloseable {
     private static final class FileSlice {
         final List<Symbol> symbols;           // Tier-1 declarations
         final List<MonikerEdge> base;         // Tier-1 structural edges (e.g. CONTAINS)
+        final List<TextUnit> texts;           // Tier-1 D2 text units (re-emitted so Tier-2 doesn't drop them)
         final Set<String> names = new HashSet<>();              // value-name layers resolved
         final List<MonikerEdge> valueEdges = new ArrayList<>(); // accumulated across names
         boolean structural;                   // type/annotation refs + hierarchy resolved (once/file)
         final List<MonikerEdge> structuralEdges = new ArrayList<>();
 
-        FileSlice(List<Symbol> symbols, List<MonikerEdge> base) {
+        FileSlice(List<Symbol> symbols, List<MonikerEdge> base, List<TextUnit> texts) {
             this.symbols = symbols;
             this.base = base;
+            this.texts = texts;
         }
 
         FileIndex toIndex(int fid) {
             List<MonikerEdge> all = new ArrayList<>(base);
             all.addAll(valueEdges);
             all.addAll(structuralEdges);
-            return new FileIndex(fid, symbols, all);
+            // Carry the file's text units through: applyEdit replaces the whole overlay slice, so a
+            // Tier-2 re-apply that dropped texts would erase this file from text search (M3 task-01).
+            return new FileIndex(fid, symbols, all, texts);
         }
     }
 
@@ -333,7 +338,7 @@ public final class EdgeResolver implements AutoCloseable {
         FileSlice slice = slices.get(fid);
         if (slice == null) {
             FileIndex tier1 = indexer.indexFile(fid, path, sourceSetOf(fid));
-            slice = new FileSlice(tier1.symbols(), new ArrayList<>(tier1.edges()));
+            slice = new FileSlice(tier1.symbols(), new ArrayList<>(tier1.edges()), tier1.texts());
             slices.put(fid, slice);
         }
         return slice;
