@@ -1,10 +1,13 @@
 package jcma.tools;
 
+import jcma.index.SymbolKind;
 import jcma.mcp.json.JsonValue;
 import jcma.mcp.json.JsonValue.JsonNull;
 import jcma.mcp.json.JsonValue.JsonObject;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Shared plumbing for the §6 query tools (M2 task-04): the common input schema, JSON arg helpers, and
@@ -44,6 +47,20 @@ final class ToolSupport {
     /** {@code args} as an object, or an empty object when it is absent / JSON {@code null} / not an object. */
     static JsonObject obj(JsonValue args) {
         return args instanceof JsonObject o ? o : JsonObject.empty();
+    }
+
+    /** The declaration kinds worth filtering on, as a JSON enum (matches {@link SymbolKind} names). */
+    static JsonValue.JsonArray kindEnum() {
+        SymbolKind[] kinds = {
+            SymbolKind.CLASS, SymbolKind.INTERFACE, SymbolKind.ENUM, SymbolKind.RECORD,
+            SymbolKind.ANNOTATION, SymbolKind.METHOD, SymbolKind.CONSTRUCTOR, SymbolKind.FIELD,
+            SymbolKind.ENUM_CONSTANT
+        };
+        List<JsonValue> names = new ArrayList<>(kinds.length);
+        for (SymbolKind k : kinds) {
+            names.add(JsonValue.of(k.name()));
+        }
+        return new JsonValue.JsonArray(names);
     }
 
     /** The integer member at {@code key}, or {@code null} if absent / JSON {@code null}. */

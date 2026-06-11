@@ -18,6 +18,7 @@ import jcma.response.BudgetPolicy;
 import jcma.session.AnalysisSession;
 import jcma.tools.FindDefinitionTool;
 import jcma.tools.FindReferencesTool;
+import jcma.tools.GrepJavaTool;
 import jcma.tools.SearchSymbolsTool;
 import jcma.workspace.IndexLayout;
 import jcma.workspace.IndexLock;
@@ -102,6 +103,7 @@ final class Serve {
         registry.register(new FindDefinitionTool(() -> session.svc, budget));
         registry.register(new FindReferencesTool(() -> session.svc, budget));
         registry.register(new SearchSymbolsTool(() -> session.svc, budget));
+        registry.register(new GrepJavaTool(() -> session.svc, budget));
 
         // Pause-to-index: synchronous, lazy on the first tools/call, with a one-time stderr note.
         Runnable bootstrap = () -> {

@@ -7,11 +7,13 @@ import jcma.resolve.ReferenceGroup;
 import jcma.resolve.References;
 import jcma.resolve.UnconfirmedRef;
 import jcma.response.ToolResult.Fragment;
+import jcma.response.ToolResult.LineMatchFragment;
 import jcma.response.ToolResult.RefGroupFragment;
 import jcma.response.ToolResult.RefLine;
 import jcma.response.ToolResult.SymbolFragment;
 import jcma.response.ToolResult.TextFragment;
 import jcma.response.ToolResult.UnconfirmedTailFragment;
+import jcma.session.TextHit;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -56,6 +58,15 @@ public final class Shaping {
                 ? EXTERNAL
                 : file + ":" + s.range().startLine();
         return new SymbolFragment(display(s.signature(), s.moniker()), s.kind().name(), location, null);
+    }
+
+    /**
+     * A {@code grep_java} text-tier hit ({@link TextHit}) → {@link LineMatchFragment}: its
+     * {@code file:line:col} location, the kind label, and the matching line. Mirrors {@link #symbol} —
+     * a pure, stateless map from the session carrier to the rendered fragment.
+     */
+    public static LineMatchFragment lineMatch(TextHit h) {
+        return new LineMatchFragment(h.file() + ":" + h.line() + ":" + h.col(), h.kind(), h.snippet());
     }
 
     /**

@@ -63,7 +63,8 @@ public record ToolResult(List<Fragment> fragments, boolean isError) {
 
     /** One rendered piece of a result; the sealed set the writer and budget know how to handle. */
     public sealed interface Fragment
-            permits TextFragment, SymbolFragment, RefGroupFragment, FileRollupFragment, UnconfirmedTailFragment {
+            permits TextFragment, SymbolFragment, LineMatchFragment, RefGroupFragment, FileRollupFragment,
+                    UnconfirmedTailFragment {
         String render();
     }
 
@@ -71,6 +72,23 @@ public record ToolResult(List<Fragment> fragments, boolean isError) {
     public record TextFragment(String text) implements Fragment {
         @Override public String render() {
             return text;
+        }
+    }
+
+    /**
+     * One {@code grep_java} <b>text-tier</b> match (M3 task-02): a {@code file:line:col} location, a
+     * bracketed {@code kind} label ({@code string-literal} / {@code comment} / {@code javadoc} — so the
+     * hit is self-describing), and the matching line's {@code snippet}. Rendered grep-style and visually
+     * distinct from {@link SymbolFragment}: {@code file:line:col  [kind]  snippet}. Kept separate from
+     * the generic {@link TextFragment} (header/note/marker carrier) — a different role, same package.
+     */
+    public record LineMatchFragment(String location, String kind, String snippet) implements Fragment {
+        @Override public String render() {
+            StringBuilder sb = new StringBuilder(location).append("  [").append(kind).append(']');
+            if (snippet != null && !snippet.isEmpty()) {
+                sb.append("  ").append(snippet);
+            }
+            return sb.toString();
         }
     }
 

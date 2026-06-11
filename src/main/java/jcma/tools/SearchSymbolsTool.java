@@ -53,26 +53,12 @@ public final class SearchSymbolsTool implements ToolHandler {
     public JsonValue schema() {
         JsonObject props = JsonObject.empty()
                 .with("query", ToolSupport.typed("string", "Case-sensitive substring of the simple name."))
-                .with("kind", ToolSupport.typed("string", "Optional declaration-kind filter.").with("enum", kindEnum()))
+                .with("kind", ToolSupport.typed("string", "Optional declaration-kind filter.").with("enum", ToolSupport.kindEnum()))
                 .with("limit", ToolSupport.typed("integer", "Max results (default " + DEFAULT_LIMIT + ")."));
         return JsonObject.empty()
                 .with("type", JsonValue.of("object"))
                 .with("properties", props)
                 .with("required", new JsonValue.JsonArray(java.util.List.of(JsonValue.of("query"))));
-    }
-
-    /** The declaration kinds worth filtering on, as a JSON enum (matches {@link SymbolKind} names). */
-    private static JsonValue.JsonArray kindEnum() {
-        SymbolKind[] kinds = {
-            SymbolKind.CLASS, SymbolKind.INTERFACE, SymbolKind.ENUM, SymbolKind.RECORD,
-            SymbolKind.ANNOTATION, SymbolKind.METHOD, SymbolKind.CONSTRUCTOR, SymbolKind.FIELD,
-            SymbolKind.ENUM_CONSTANT
-        };
-        List<JsonValue> names = new ArrayList<>(kinds.length);
-        for (SymbolKind k : kinds) {
-            names.add(JsonValue.of(k.name()));
-        }
-        return new JsonValue.JsonArray(names);
     }
 
     @Override
