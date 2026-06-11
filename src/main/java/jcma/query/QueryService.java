@@ -2,6 +2,7 @@ package jcma.query;
 
 import jcma.engine.Position;
 import jcma.index.MonikerEdge;
+import jcma.index.SearchSpec;
 import jcma.index.Symbol;
 import jcma.index.SymbolKind;
 import jcma.resolve.Definition;
@@ -135,13 +136,24 @@ public final class QueryService implements AutoCloseable {
      */
     public List<SymbolHit> searchSymbols(String query, SymbolKind kind, int limit, Duration deadline)
             throws QueryTimeoutException, IOException {
-        List<SymbolHit> hits = execute(() -> session.searchSymbols(query), deadline);
+        return searchSymbols(SearchSpec.literal(query), kind, limit, deadline);
+    }
+
+    /**
+     * {@code search_symbols} / {@code grep_java} symbol tier with the full {@link SearchSpec} match
+     * policy (regex / {@code fixed_string} / case mode). Runs the index search on the worker thread,
+     * then off-thread filters by {@code kind}, orders by {@link SymbolRanking#byRelevance} (keyed on the
+     * raw pattern text), and truncates to {@code limit}.
+     */
+    public List<SymbolHit> searchSymbols(SearchSpec spec, SymbolKind kind, int limit, Duration deadline)
+            throws QueryTimeoutException, IOException {
+        List<SymbolHit> hits = execute(() -> session.searchSymbols(spec), deadline);
         Stream<SymbolHit> stream = hits.stream();
         if (kind != null) {
             stream = stream.filter(h -> h.symbol().kind() == kind);
         }
         return stream
-                .sorted(Comparator.comparing(SymbolHit::symbol, SymbolRanking.byRelevance(query)))
+                .sorted(Comparator.comparing(SymbolHit::symbol, SymbolRanking.byRelevance(spec.pattern())))
                 .limit(limit)
                 .toList();
     }
@@ -153,7 +165,13 @@ public final class QueryService implements AutoCloseable {
      */
     public List<TextHit> searchText(String query, int limit, Duration deadline)
             throws QueryTimeoutException, IOException {
-        List<TextHit> hits = execute(() -> session.searchText(query), deadline);
+        return searchText(SearchSpec.literal(query), limit, deadline);
+    }
+
+    /** {@code grep_java} text tier with the full {@link SearchSpec} match policy (regex / {@code fixed_string} / case). */
+    public List<TextHit> searchText(SearchSpec spec, int limit, Duration deadline)
+            throws QueryTimeoutException, IOException {
+        List<TextHit> hits = execute(() -> session.searchText(spec), deadline);
         return hits.stream()
                 .sorted(Comparator.comparing((TextHit h) -> h.file() == null ? "" : h.file())
                         .thenComparingInt(TextHit::line)

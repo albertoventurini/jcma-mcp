@@ -8,6 +8,7 @@ import jcma.index.CompactionPolicy;
 import jcma.index.Indexer;
 import jcma.index.LsmStore;
 import jcma.index.MonikerEdge;
+import jcma.index.SearchSpec;
 import jcma.index.Symbol;
 import jcma.index.TextIndex;
 import jcma.index.UsageNameIndex;
@@ -154,9 +155,14 @@ public final class AnalysisSession implements AutoCloseable {
      * + filtering are the caller's (off-thread) concern.
      */
     public List<SymbolHit> searchSymbols(String query) throws IOException {
+        return searchSymbols(SearchSpec.literal(query));
+    }
+
+    /** {@code search_symbols} / {@code grep_java} symbol tier with the full {@link SearchSpec} match policy. */
+    public List<SymbolHit> searchSymbols(SearchSpec spec) throws IOException {
         refresh(null);
         List<SymbolHit> hits = new ArrayList<>();
-        for (Symbol s : store.search(query)) {
+        for (Symbol s : store.search(spec)) {
             hits.add(new SymbolHit(s, fileOf(s)));
         }
         return hits;
@@ -169,9 +175,14 @@ public final class AnalysisSession implements AutoCloseable {
      *
      */
     public List<TextHit> searchText(String query) throws IOException {
+        return searchText(SearchSpec.literal(query));
+    }
+
+    /** {@code grep_java} text tier with the full {@link SearchSpec} match policy. */
+    public List<TextHit> searchText(SearchSpec spec) throws IOException {
         refresh(null);
         List<TextHit> hits = new ArrayList<>();
-        for (TextIndex.TextOccurrence o : store.searchText(query)) {
+        for (TextIndex.TextOccurrence o : store.searchText(spec)) {
             Path rel = fileTable.pathOf(o.fileId());
             String file = rel == null ? null : repoRoot.resolve(rel).toString();
             hits.add(new TextHit(file, o.line(), o.col(), label(o.kind()), o.lineSnippet()));

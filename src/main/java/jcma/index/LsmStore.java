@@ -278,15 +278,29 @@ public final class LsmStore implements AutoCloseable {
      * ({@code fileId < 0}) and base symbols whose file is overlaid are excluded.
      */
     public List<Symbol> search(String query) {
+        return search(SearchSpec.literal(query == null ? "" : query));
+    }
+
+    /**
+     * Name search over the live view for {@code spec} (literal substring on the fast path, else regex):
+     * the mmap'd trigram index (base) unioned with a scan of the overlay's symbols, identical before and
+     * after a compaction. Phantoms ({@code fileId < 0}) and base symbols whose file is overlaid are
+     * excluded. A light counter records the trigram fast path vs. the regex/insensitive verify-all path.
+     */
+    public List<Symbol> search(SearchSpec spec) {
+        if (spec == null || spec.isEmpty()) {
+            return List.of();
+        }
+        metrics.counter(spec.fastPathEligible() ? "grep.symbol.fastpath" : "grep.symbol.verifyall").add(1);
         List<Symbol> out = new ArrayList<>();
         Set<String> seen = new HashSet<>();
         for (Symbol s : ovSymbols.values()) {
-            if (s.name() != null && s.name().contains(query) && seen.add(s.moniker())) {
+            if (s.name() != null && spec.matches(s.name()) && seen.add(s.moniker())) {
                 out.add(s);
             }
         }
         if (baseSym != null && baseTri != null) {
-            for (int id : baseTri.searchSymbols(query)) {
+            for (int id : baseTri.searchSymbols(spec)) {
                 Symbol s = baseSym.symbol(id);
                 if (s.fileId() >= 0 && !edited.containsKey(s.fileId()) && seen.add(s.moniker())) {
                     out.add(s);
@@ -304,12 +318,22 @@ public final class LsmStore implements AutoCloseable {
      *
      */
     public List<TextIndex.TextOccurrence> searchText(String query) {
-        if (query == null || query.isEmpty()) {
+        return searchText(SearchSpec.literal(query == null ? "" : query));
+    }
+
+    /**
+     * Text search over the live view for {@code spec} (literal substring on the fast path, else regex):
+     * the mmap'd {@link TextIndex} (base, excluding overlaid files) unioned with an in-memory scan of
+     * the overlay files' text units, same base+overlay fidelity as {@link #search}. A pure passthrough —
+     * no resolve, no deadline-sensitive work.
+     */
+    public List<TextIndex.TextOccurrence> searchText(SearchSpec spec) {
+        if (spec == null || spec.isEmpty()) {
             return List.of();
         }
         List<TextIndex.TextOccurrence> out = new ArrayList<>();
         if (baseText != null) {
-            for (TextIndex.TextOccurrence o : baseText.search(query)) {
+            for (TextIndex.TextOccurrence o : baseText.search(spec)) {
                 if (!edited.containsKey(o.fileId())) { // overlaid files are served from the overlay below
                     out.add(o);
                 }
@@ -317,7 +341,7 @@ public final class LsmStore implements AutoCloseable {
         }
         for (FileIndex fi : edited.values()) {
             for (TextUnit u : fi.texts()) {
-                TextIndex.match(u.kind(), fi.fileId(), u.startLine(), u.startCol(), u.text(), query, out);
+                TextIndex.match(u.kind(), fi.fileId(), u.startLine(), u.startCol(), u.text(), spec, out);
             }
         }
         return out;

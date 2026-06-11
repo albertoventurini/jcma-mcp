@@ -1,5 +1,6 @@
 package jcma.tools;
 
+import jcma.index.SearchSpec;
 import jcma.index.SymbolKind;
 import jcma.mcp.ToolHandler;
 import jcma.mcp.json.JsonValue;
@@ -19,6 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Supplier;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * The {@code grep_java} §6 tool (M3 task-02): the agent's own verb, with <b>no symbol-hole</b>. It
@@ -27,11 +29,16 @@ import java.util.function.Supplier;
  * text (a log message, a TODO) still answers where {@code search_java_symbols} would silently miss.
  * This is the reflex flip: use it instead of {@code grep} for {@code .java}.
  *
- * <p>MVP scope (this task): literal/substring matching only (regex is task-03); a combined display
- * {@code limit} (symbols first) with an <em>honest</em> {@code Showing K of N} marker derived from an
- * uncapped scan (the search primitives are uncapped, so the true total is free); aggregation/collapse
- * and text-tier relevance ranking are task-04. The result is routed through the existing swappable
- * {@link BudgetPolicy} token seam.
+ * <p>{@code query} is a <b>regular expression by default</b> (the agent's grep reflex; D-a), applied
+ * with uniform semantics across both tiers (D-b): {@code fixed_string} opts into literal matching
+ * (grep {@code -F}), {@code case_sensitive} (default true; D-c) opts case mode. Anchors are per
+ * physical line ({@link java.util.regex.Pattern#MULTILINE}; {@code .} does not cross {@code \n} — D-d).
+ * The match policy is the swappable {@link SearchSpec}, so a metachar-free case-sensitive query keeps
+ * the trigram/{@code indexOf} fast path unchanged.
+ *
+ * <p>A combined display {@code limit} (symbols first) carries an <em>honest</em> {@code Showing K of N}
+ * marker derived from an uncapped scan (the search primitives are uncapped, so the true total is free);
+ * the result is routed through the existing swappable {@link BudgetPolicy} token seam.
  */
 public final class GrepJavaTool implements ToolHandler {
 
@@ -58,16 +65,22 @@ public final class GrepJavaTool implements ToolHandler {
     public String description() {
         return "Search Java sources — use instead of grep for `.java`. Returns semantic Java symbol "
                 + "matches first, then plain string-literal / comment / Javadoc text matches, so a token "
-                + "that exists only as text still hits. `query` = literal substring (case-sensitive; regex "
-                + "is not yet supported). `match` = symbols | text | both (default both). `kind` filters the "
-                + "symbol tier. `limit` (default " + DEFAULT_LIMIT + ") caps the combined, symbols-first result.";
+                + "that exists only as text still hits. `query` = regular expression (default; `^`/`$` "
+                + "anchor per line); set `fixed_string` for a literal substring. `case_sensitive` defaults "
+                + "true. `match` = symbols | text | both (default both). `kind` filters the symbol tier. "
+                + "`limit` (default " + DEFAULT_LIMIT + ") caps the combined, symbols-first result.";
     }
 
     @Override
     public JsonValue schema() {
         JsonObject props = JsonObject.empty()
                 .with("query", ToolSupport.typed("string",
-                        "Literal substring to find (case-sensitive). Regex is not yet supported."))
+                        "Regular expression to find (default); `^`/`$` anchor per line. Set `fixed_string` "
+                                + "for a literal substring."))
+                .with("fixed_string", ToolSupport.typed("boolean",
+                        "Treat `query` as a literal substring, not a regex (grep -F). Default false."))
+                .with("case_sensitive", ToolSupport.typed("boolean",
+                        "Case-sensitive matching. Default true."))
                 .with("match", ToolSupport.typed("string",
                                 "Which tier(s) to search (default both).")
                         .with("enum", new JsonValue.JsonArray(List.of(
@@ -113,14 +126,23 @@ public final class GrepJavaTool implements ToolHandler {
         Integer limitArg = ToolSupport.optInt(in, "limit");
         int limit = limitArg == null ? DEFAULT_LIMIT : limitArg;
 
+        boolean fixedString = ToolSupport.optBool(in, "fixed_string", false);
+        boolean caseSensitive = ToolSupport.optBool(in, "case_sensitive", true);
+        SearchSpec spec = SearchSpec.of(query, fixedString, caseSensitive);
+        try {
+            spec.validate(); // surface a malformed regex as a clean error before any scan
+        } catch (PatternSyntaxException e) {
+            return ToolResult.error("grep_java: invalid regex: " + e.getMessage());
+        }
+
         try {
             // Uncapped scans (Integer.MAX_VALUE): the true totals are free, so the cap marker is honest.
             List<SymbolHit> symbols = match == Match.TEXT
                     ? List.of()
-                    : svc.get().searchSymbols(query, kind, Integer.MAX_VALUE, ToolSupport.DEFAULT_DEADLINE);
+                    : svc.get().searchSymbols(spec, kind, Integer.MAX_VALUE, ToolSupport.DEFAULT_DEADLINE);
             List<TextHit> text = match == Match.SYMBOLS
                     ? List.of()
-                    : svc.get().searchText(query, Integer.MAX_VALUE, ToolSupport.DEFAULT_DEADLINE);
+                    : svc.get().searchText(spec, Integer.MAX_VALUE, ToolSupport.DEFAULT_DEADLINE);
 
             int totalSymbols = symbols.size();
             int totalText = text.size();

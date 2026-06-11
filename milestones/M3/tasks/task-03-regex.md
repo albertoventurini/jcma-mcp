@@ -11,14 +11,28 @@
   candidates today.
 - **Decision locked:** D4 — regex from the start, not literal-only.
 
-## [OPEN] — raise with the user *before* implementing
-1. **`query` default semantics:** regex-by-default (grep-like) with `fixed_string: true` to opt into
-   literal, vs. literal-default with `regex: true`. (Doc leans regex-default.)
-2. **Case sensitivity default:** grep is case-sensitive; IntelliJ tends smart-case. Pick the default
-   + the `case_sensitive` override.
-3. **Regex execution strategy:** how trigram pre-filtering composes with `java.util.regex`
-   verification; anchoring (`^`/`$` per-line vs whole-text), multiline, and behaviour when the
-   pattern has no extractable trigrams (fall back to a scan of the candidate set — bound it).
+## [RESOLVED] decisions (2026-06-11, with the user) — fold into PRD §6 at task-05
+- **D-a — `query` is regex by default; `fixed_string: true` opts into literal** (grep `-F`). Lower
+  friction for the agent (its grep reflex is regex-by-default).
+- **D-b — regex applies to BOTH tiers, uniform semantics** (never "regex on a subset"). A
+  metachar-free, case-sensitive pattern keeps today's trigram/`indexOf` fast path as an invisible
+  optimization (identical result set); the regex path (`Matcher.find`, substring-style) is taken only
+  when the pattern carries a metacharacter or is case-insensitive.
+- **D-c — case-sensitive by default; `case_sensitive: false`** opts into `CASE_INSENSITIVE` (symbols
+  then go verify-all, since the trigram index is case-sensitive).
+- **D-d — `MULTILINE` on, `DOTALL` off.** `^`/`$` anchor per physical line within a text unit; `.`
+  does not cross `\n`. **Caveat (documented):** comments/Javadoc are indexed via JavaParser
+  `getContent()`, which keeps the internal `\n` + ` * ` gutter, so `^Computes` won't match a Javadoc
+  line stored as ` * Computes`. String literals + line comments anchor cleanly. Accepted rather than
+  reopen task-01's frozen stored format.
+- **Implementation seam:** a single `jcma.index.SearchSpec` (lowest package) carries the match policy
+  and is threaded through `TextIndex`/`TrigramIndex`/`LsmStore` → `AnalysisSession` → `QueryService` →
+  `GrepJavaTool`; `String` overloads delegate to a literal spec so `search_java_symbols`/CLI/REPL are
+  untouched.
+- **Reconciliation with task-01:** the text tier is a linear inline-scan (no trigram index), so the
+  "no-trigram bounded fallback" is the *normal* text path — regex is just `Matcher.find()` inside the
+  existing deadline-bounded scan. A literal-seed → trigram pre-filter can layer on in M4 if a
+  large-repo measurement ever demands it.
 
 ## What to build
 - Extend `GrepJavaTool` input: `query` interpreted per [OPEN]-1; add `fixed_string` and

@@ -71,4 +71,13 @@ final class ToolSupport {
         }
         return v.asInt();
     }
+
+    /** The boolean member at {@code key}, or {@code dflt} if absent / JSON {@code null}. */
+    static boolean optBool(JsonObject obj, String key, boolean dflt) {
+        JsonValue v = obj.get(key);
+        if (v == null || v instanceof JsonNull) {
+            return dflt;
+        }
+        return v.asBoolean();
+    }
 }

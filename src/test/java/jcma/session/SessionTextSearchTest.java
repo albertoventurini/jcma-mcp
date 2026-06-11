@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.file.Path;
 import java.util.List;
 import jcma.IndexFixture;
+import jcma.index.SearchSpec;
 import jcma.obs.Metrics;
 import jcma.workspace.Workspace;
 import org.junit.jupiter.api.Test;
@@ -38,6 +39,23 @@ class SessionTextSearchTest {
             assertTrue(hit.snippet().contains("minimal interface"), "snippet carries the matched line");
 
             assertTrue(session.searchText("zzzz-no-such-text").isEmpty(), "absent query → empty, not error");
+        }
+    }
+
+    @Test
+    void regexAndCaseInsensitiveOverTheSession(@TempDir Path tmp) throws Exception {
+        Path indexDir = tmp.resolve("idx");
+        IndexFixture.build(FIXTURE, indexDir);
+        try (AnalysisSession session =
+                AnalysisSession.open(indexDir, Workspace.discover(FIXTURE), Metrics.noop())) {
+            // A regex spanning the Javadoc phrase "minimal interface".
+            List<TextHit> regex = session.searchText(SearchSpec.of("minimal.*interface", false, true));
+            assertFalse(regex.isEmpty(), "the `.*` regex finds the Javadoc phrase");
+            assertTrue(regex.get(0).file().endsWith("Shape.java"), "resolved to its declaring path");
+            // Case-sensitive by default misses; opting out matches.
+            assertTrue(session.searchText(SearchSpec.of("MINIMAL", false, true)).isEmpty(), "sensitive by default");
+            assertFalse(session.searchText(SearchSpec.of("MINIMAL", false, false)).isEmpty(),
+                    "case_sensitive:false matches");
         }
     }
 }

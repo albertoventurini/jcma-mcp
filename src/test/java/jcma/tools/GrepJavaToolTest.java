@@ -154,6 +154,126 @@ class GrepJavaToolTest {
         }
     }
 
+    // ------------------------------------------------------------------ M3 task-03: regex
+
+    @Test
+    void regexMatchesTextSitesAndExcludesNearMiss(@TempDir Path indexDir) throws Exception {
+        try (QueryService svc = ToolTestSupport.queryService(GREP, indexDir)) {
+            // foo.*bar over the string literal "lookup failed for id; emitting telemetry".
+            assertTrue(tool(svc).call(args("{\"query\":\"failed.*telemetry\"}")).render().contains("[string-literal]"),
+                    "a `.*` regex hits the literal line");
+            // The reverse order is a near-miss: it must NOT match.
+            assertFalse(tool(svc).call(args("{\"query\":\"telemetry.*failed\"}")).render().contains("[string-literal]"),
+                    "the reversed near-miss is excluded");
+            // A character class hits the digits "256" in the Javadoc.
+            assertTrue(tool(svc).call(args("{\"query\":\"[0-9]\"}")).render().contains("256"),
+                    "a char class hits the Javadoc digits");
+            // An alternation hits the comment carrying both log.debug(/log.trace(.
+            assertTrue(tool(svc).call(args("{\"query\":\"(debug|trace)\"}")).render().contains("[comment]"),
+                    "an alternation hits the comment line");
+        }
+    }
+
+    @Test
+    void fixedStringIsLiteralNotRegex(@TempDir Path indexDir) throws Exception {
+        try (QueryService svc = ToolTestSupport.queryService(GREP, indexDir)) {
+            // `[0-9]` as a literal matches the comment text "[0-9]" only — never the Javadoc digits "256".
+            ToolResult lit = tool(svc).call(args("{\"query\":\"[0-9]\",\"fixed_string\":true}"));
+            assertFalse(lit.isError(), () -> lit.render());
+            assertTrue(lit.render().contains("[comment]"), "literal `[0-9]` hits the comment carrying it: " + lit.render());
+            assertFalse(lit.render().contains("256"), "literal `[0-9]` does NOT hit the Javadoc digits: " + lit.render());
+            // As a regex (default) the same query DOES hit the digits — proving the two diverge.
+            assertTrue(tool(svc).call(args("{\"query\":\"[0-9]\"}")).render().contains("256"),
+                    "regex `[0-9]` hits the digits");
+            // `log.debug(` with an unbalanced paren is a valid LITERAL (matches the comment text)…
+            assertTrue(tool(svc).call(args("{\"query\":\"log.debug(\",\"fixed_string\":true}")).render().contains("[comment]"),
+                    "literal `log.debug(` matches the comment text");
+        }
+    }
+
+    @Test
+    void regexSpansBothTiersAndLiteralFastPathIsInvisible(@TempDir Path indexDir) throws Exception {
+        try (QueryService svc = ToolTestSupport.queryService(GREP, indexDir)) {
+            // `look.p` matches the lookup METHOD symbol AND the "lookup failed…" literal.
+            String r = tool(svc).call(args("{\"query\":\"look.p\"}")).render();
+            assertTrue(r.contains("METHOD"), "the lookup method symbol matches the regex: " + r);
+            assertTrue(r.contains("[string-literal]"), "the lookup literal matches the regex: " + r);
+            // The metachar-free `lookup` returns exactly what task-02 returned (the fast path is invisible).
+            assertEquals(tool(svc).call(args("{\"query\":\"lookup\"}")).render(),
+                    tool(svc).call(args("{\"query\":\"lookup\",\"fixed_string\":true}")).render(),
+                    "a metachar-free query is identical whether routed as literal or regex");
+        }
+    }
+
+    @Test
+    void caseSensitivityDefaultsOnAndOptsOff(@TempDir Path indexDir) throws Exception {
+        try (QueryService svc = ToolTestSupport.queryService(GREP, indexDir)) {
+            // Default is case-sensitive: the wrong case misses both tiers.
+            assertTrue(tool(svc).call(args("{\"query\":\"LOOKUP\"}")).render().contains("no matches"),
+                    "case-sensitive by default: LOOKUP misses lookup");
+            // case_sensitive:false matches both the symbol and the text.
+            String ci = tool(svc).call(args("{\"query\":\"LOOKUP\",\"case_sensitive\":false}")).render();
+            assertTrue(ci.contains("METHOD"), "insensitive matches the symbol: " + ci);
+            assertTrue(ci.contains("[string-literal]"), "insensitive matches the text: " + ci);
+        }
+    }
+
+    @Test
+    void noUsableTrigramPatternStillCorrectAndBounded(@TempDir Path indexDir) throws Exception {
+        try (QueryService svc = ToolTestSupport.queryService(GREP, indexDir)) {
+            // `^l` carries no usable trigram for the symbol tier → verify-all; still finds lookup.
+            String anchored = tool(svc).call(args("{\"query\":\"^l\"}")).render();
+            assertTrue(anchored.contains("METHOD"), "anchored `^l` finds the lookup symbol via verify-all: " + anchored);
+            assertTrue(anchored.contains("[string-literal]"), "anchored `^l` finds the literal: " + anchored);
+            // `t.` is correct and bounded by the honest cap.
+            ToolResult bounded = tool(svc).call(args("{\"query\":\"t.\",\"limit\":2}"));
+            assertFalse(bounded.isError(), () -> bounded.render());
+        }
+    }
+
+    @Test
+    void anchoringIsPerLineMultilineWithGutterCaveat(@TempDir Path indexDir) throws Exception {
+        try (QueryService svc = ToolTestSupport.queryService(GREP, indexDir)) {
+            // String literals anchor cleanly: `telemetry$` (end) and `^lookup` (start) hit; `^telemetry` does not.
+            assertTrue(tool(svc).call(args("{\"query\":\"telemetry$\"}")).render().contains("[string-literal]"),
+                    "`$` anchors the literal's end");
+            assertTrue(tool(svc).call(args("{\"query\":\"^lookup\"}")).render().contains("[string-literal]"),
+                    "`^` anchors the literal's start (clean, no gutter)");
+            assertFalse(tool(svc).call(args("{\"query\":\"^telemetry\"}")).render().contains("[string-literal]"),
+                    "`^telemetry` does not match mid-line");
+            // MULTILINE: `$` anchors per physical line within the multi-line Javadoc unit.
+            assertTrue(tool(svc).call(args("{\"query\":\"throughput\\\\.$\"}")).render().contains("[javadoc]"),
+                    "MULTILINE `$` matches a Javadoc line end");
+            // Gutter caveat: `^Computes` fails (the ` * ` gutter precedes the prose) though `Computes` matches.
+            assertFalse(tool(svc).call(args("{\"query\":\"^Computes\"}")).render().contains("[javadoc]"),
+                    "the ` * ` Javadoc gutter blocks `^Computes`");
+            assertTrue(tool(svc).call(args("{\"query\":\"Computes\"}")).render().contains("[javadoc]"),
+                    "the same prose matches without the anchor");
+        }
+    }
+
+    @Test
+    void broadRegexStaysBoundedWithHonestMarker(@TempDir Path indexDir) throws Exception {
+        try (QueryService svc = ToolTestSupport.queryService(GREP, indexDir)) {
+            ToolResult r = tool(svc).call(args("{\"query\":\".\",\"limit\":3}"));
+            assertFalse(r.isError(), () -> r.render());
+            String out = r.render();
+            assertTrue(out.contains("not exhaustive"), "a flood is capped with an honest marker: " + out);
+        }
+    }
+
+    @Test
+    void invalidRegexIsACleanToolError(@TempDir Path indexDir) throws Exception {
+        try (QueryService svc = ToolTestSupport.queryService(GREP, indexDir)) {
+            // Unbalanced paren and an open char class are malformed regexes (default mode).
+            ToolResult r = tool(svc).call(args("{\"query\":\"log.debug(\"}"));
+            assertTrue(r.isError(), "an invalid regex is a tool error: " + r.render());
+            assertTrue(r.render().toLowerCase(Locale.ROOT).contains("invalid regex"),
+                    "the error names the cause: " + r.render());
+            assertTrue(tool(svc).call(args("{\"query\":\"[a-\"}")).isError(), "an open char class is a tool error");
+        }
+    }
+
     private static JsonValue args(String json) {
         return JsonReader.parse(json);
     }

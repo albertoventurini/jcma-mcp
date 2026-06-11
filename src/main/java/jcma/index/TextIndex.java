@@ -238,18 +238,26 @@ public final class TextIndex implements AutoCloseable {
     }
 
     /**
-     * Occurrences whose text contains {@code query} as a substring (case-sensitive), scanning every
-     * unit. One occurrence per distinct matched line within a unit; ordered by {@code (fileId, line,
-     * col)}. Empty for a blank query.
+     * Occurrences whose text contains {@code query} as a literal, case-sensitive substring — the
+     * {@code String} overload (delegates to a {@link SearchSpec#literal literal spec}).
      */
     public List<TextOccurrence> search(String query) {
-        if (query == null || query.isEmpty()) {
+        return search(SearchSpec.literal(query == null ? "" : query));
+    }
+
+    /**
+     * Occurrences whose text matches {@code spec} (literal substring on the fast path, else regex via
+     * {@code Matcher.find}), scanning every unit. One occurrence per distinct matched line within a
+     * unit; ordered by {@code (fileId, line, col)}. Empty for a blank pattern.
+     */
+    public List<TextOccurrence> search(SearchSpec spec) {
+        if (spec == null || spec.isEmpty()) {
             return List.of();
         }
         List<TextOccurrence> out = new ArrayList<>();
         for (int u = 0; u < nUnits; u++) {
             match(KINDS[col(C_KIND, u)], col(C_FILE_ID, u), col(C_START_LINE, u), col(C_START_COL, u),
-                    textOf(u), query, out);
+                    textOf(u), spec, out);
         }
         return out;
     }
@@ -260,12 +268,23 @@ public final class TextIndex implements AutoCloseable {
     }
 
     /**
-     * Append the occurrences of {@code query} within one (in-memory) unit to {@code out}. Shared by
+     * Append the occurrences of {@code spec} within one (in-memory) unit to {@code out}. Shared by
      * {@link #search} and {@link LsmStore}'s overlay scan, so a unit matches identically whether it
-     * sits in the base segment or the overlay. A match's line/col is recovered from the unit's start
-     * and the match offset (newlines before it); one occurrence per distinct matched line.
+     * sits in the base segment or the overlay. Routes to the literal {@code indexOf} loop on the fast
+     * path, else a single {@code Matcher.find} loop over the unit text.
      */
     static void match(TextKind kind, int fileId, int startLine, int startCol, String text,
+            SearchSpec spec, List<TextOccurrence> out) {
+        if (spec.fastPathEligible()) {
+            matchLiteral(kind, fileId, startLine, startCol, text, spec.literal(), out);
+        } else {
+            matchRegex(kind, fileId, startLine, startCol, text, spec, out);
+        }
+    }
+
+    // The literal fast path: indexOf scan, one occurrence per distinct matched line. A match's line/col
+    // is recovered from the unit's start and the match offset (newlines before it).
+    private static void matchLiteral(TextKind kind, int fileId, int startLine, int startCol, String text,
             String query, List<TextOccurrence> out) {
         int from = 0;
         int idx;
@@ -285,6 +304,31 @@ public final class TextIndex implements AutoCloseable {
                 lastLine = line;
             }
             from = idx + Math.max(1, query.length());
+        }
+    }
+
+    // The regex path: a single Matcher over the unit text. find() handles the zero-width advance (no
+    // infinite loop on `^`/`a?`); the same per-line dedup applies. MULTILINE makes `^`/`$` anchor per
+    // physical line within the unit.
+    private static void matchRegex(TextKind kind, int fileId, int startLine, int startCol, String text,
+            SearchSpec spec, List<TextOccurrence> out) {
+        java.util.regex.Matcher m = spec.matcher(text);
+        int lastLine = -1;
+        while (m.find()) {
+            int idx = m.start();
+            int line = startLine;
+            int lineStart = 0;
+            for (int i = 0; i < idx; i++) {
+                if (text.charAt(i) == '\n') {
+                    line++;
+                    lineStart = i + 1;
+                }
+            }
+            if (line != lastLine) {
+                int col = (line == startLine) ? startCol + (idx - lineStart) : (idx - lineStart) + 1;
+                out.add(new TextOccurrence(fileId, line, col, kind, snippet(text, lineStart)));
+                lastLine = line;
+            }
         }
     }
 

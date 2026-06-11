@@ -222,12 +222,24 @@ public final class TrigramIndex implements AutoCloseable {
      * name, then id. Deduped by symbol id (best rank kept). Empty for a blank or absent query.
      */
     public List<Integer> searchSymbols(String query) {
-        if (query == null || query.isEmpty()) {
+        return searchSymbols(SearchSpec.literal(query == null ? "" : query));
+    }
+
+    /**
+     * Symbol ids whose indexed name matches {@code spec} (literal substring on the fast path, else
+     * regex), ranked as above. On the fast path the candidate set is trigram-pruned; when the pattern
+     * carries a metacharacter or is case-insensitive the trigram index cannot prune, so every entry is
+     * verified against the compiled pattern. The ranking key stays the raw pattern text. Empty for a
+     * blank pattern.
+     */
+    public List<Integer> searchSymbols(SearchSpec spec) {
+        if (spec == null || spec.isEmpty()) {
             return List.of();
         }
-        List<Integer> verified = verifiedEntries(query);
+        List<Integer> verified = verifiedEntries(spec);
+        String key = spec.pattern();
         verified.sort(Comparator
-                .comparingInt((Integer e) -> rankTier(nameOf(e), query))
+                .comparingInt((Integer e) -> rankTier(nameOf(e), key))
                 .thenComparingInt(e -> nameOf(e).length())
                 .thenComparing(this::nameOf)
                 .thenComparingInt(e -> col(C_SYMBOL_ID, e)));
@@ -243,22 +255,25 @@ public final class TrigramIndex implements AutoCloseable {
         arena.close();
     }
 
-    // Entry indices whose name actually contains query (trigram-pruned, then substring-verified).
-    private List<Integer> verifiedEntries(String query) {
-        Set<Long> qtri = distinctTrigrams(query);
+    // Entry indices whose name actually matches spec. On the fast path (literal + case-sensitive) the
+    // candidate set is trigram-pruned by the literal substring; otherwise (a metacharacter, or
+    // case-insensitive) the case-sensitive trigram index cannot prune, so every entry is a candidate.
+    // Each candidate is then verified by spec.matches (substring on the fast path, else Matcher.find).
+    private List<Integer> verifiedEntries(SearchSpec spec) {
         List<Integer> candidates;
-        if (qtri.isEmpty()) {
-            // Query shorter than a trigram: no pruning possible — verify against every entry.
+        Set<Long> qtri = spec.fastPathEligible() ? distinctTrigrams(spec.literal()) : Set.of();
+        if (spec.fastPathEligible() && !qtri.isEmpty()) {
+            candidates = intersect(qtri);
+        } else {
+            // No usable trigram (short literal, or the regex/insensitive path): verify against every entry.
             candidates = new ArrayList<>(nEntries);
             for (int e = 0; e < nEntries; e++) {
                 candidates.add(e);
             }
-        } else {
-            candidates = intersect(qtri);
         }
         List<Integer> verified = new ArrayList<>(candidates.size());
         for (int e : candidates) {
-            if (nameOf(e).contains(query)) {
+            if (spec.matches(nameOf(e))) {
                 verified.add(e);
             }
         }
