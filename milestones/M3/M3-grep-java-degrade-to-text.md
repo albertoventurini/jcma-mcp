@@ -78,9 +78,10 @@ task-01 ──► task-02 ──┬─► task-03
   `java.util.regex` verify), `fixed_string` / `case_sensitive`. Depends on task-01.
 - **task-04 — Large-result UX** (`tasks/task-04-large-result-ux.md`): overflow→aggregation,
   `output` modes, `path`, `limit`, calibrated thresholds. Depends on task-02.
-- **task-05 — Routing + PRD fold-in** (`tasks/task-05-routing-prd-foldin.md`): scoped `PreToolUse`
-  hook (now safe), CLAUDE.md tweak, fold LOCKED decisions into PRD §6/§5.1, prune §11. Depends on
-  02–04.
+- **task-05 — Routing + PRD fold-in** (`tasks/task-05-routing-prd-foldin.md`): make routing portable
+  via the **MCP server instructions** + CLAUDE.md (no `PreToolUse` hook — dropped 2026-06-11, doesn't
+  fit a zero-config, client-agnostic server), fold LOCKED decisions into PRD §6/§5.1, prune §11.
+  Depends on 02–04.
 
 task-03 and task-04 are **parallelizable** after task-02.
 

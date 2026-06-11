@@ -39,5 +39,8 @@ histogram, Spike-B perf curves), not just its GO/FALLBACK verdict — don't pre-
   defaults, record the choices made, block on a human only when genuinely stuck.
 - **Navigating Java in this repo** ("where is X declared / who uses X / find a type by partial
   name") → call jcma's MCP tools (`search_java_symbols`, `find_java_definition`,
-  `find_java_references`), not Grep/Read. If they're deferred, `ToolSearch` them first. This is
+  `find_java_references`), not Grep/Read. To **search `.java` source generally** (any token, even a
+  string literal or comment) → `grep_java`, not built-in Grep: it ranks symbol matches first, then
+  degrades to labelled text, so it's never worse than grep on coverage. Non-Java files
+  (Gradle/JSON/MD) stay on built-in grep. If they're deferred, `ToolSearch` them first. This is
   jcma's own dogfood: use it on itself.

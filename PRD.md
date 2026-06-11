@@ -161,6 +161,16 @@ graph-DB engine), a **graph-shaped, general-purpose data model**, relationships 
   resolved by SymbolSolver **on demand, at file granularity, then cached** — never fully
   precomputed up front, never recomputed per query.
 
+**Full-text segment (`text.seg`) — the coverage floor under `grep_java` (M3).** A third token
+source indexing **string literals, comments, and Javadoc** so `grep_java` has no "wasn't-a-symbol"
+hole (the root cause of the grep reflex — see §6). It is an **inline-snapshot segment scanned
+linearly, *not* a trigram index**: the measurement showed a trigram form is Javadoc-dominated and
+~2.4× over the §5.1 low-memory budget, and a ~3 MB-class corpus does not need a sub-linear query —
+so the access pattern (linear scan) is matched to the data rather than reusing the decl-trigram
+machinery (mirroring the decl-vs-usage split). **Measured footprint:** all three sources ≈ **411 KB
+on this repo / ~3.9 MB on commons-lang** (≈ the size of the existing whole index). `grep_java` ranks
+symbol matches (Tier-1/2) first, then `text.seg` matches as an explicitly labelled text tier.
+
 ### Data model — a general-purpose graph
 - **Symbol identity, two IDs:** a stable **moniker** (SCIP-style structured string; survives
   re-indexing; can name dependency symbols inside jars we never parse) ↔ an interned
@@ -186,7 +196,8 @@ A segmented file mmap'd through `java.lang.foreign` (`Arena.ofShared()` + `FileC
 header · string arena (dedup UTF-8) · symbol columns · file table ·
 fwd adjacency (CSR) · rev adjacency (CSR) · occurrences (per-file slices) ·
 resolution state (per-occurrence: unresolved|resolved|stale) ·
-declaration trigram name index · usage exact-match name index
+declaration trigram name index · usage exact-match name index ·
+full-text segment (text.seg)
 ```
 **CSR (compressed sparse row)** = one `offset[symbolId]` array + a flat `targets[]` array:
 compact, cache-friendly traversal. **Memory payoff:** only small bounded caches sit in the Java
@@ -325,6 +336,15 @@ schemas finalized in Milestone 2; initial set:
 | `find_subtypes` / `find_supertypes` | type | type-hierarchy navigation |
 | `call_hierarchy` | symbol, `direction` (callers/callees) | grouped callers or callees with snippets |
 | `get_source` | symbol (FQN) | declaration source by symbol (vs. raw file+range) |
+| `grep_java` *(M3)* | `query`, `match?` (symbols/text/both), `fixed_string?`, `case_sensitive?`, `kind?`, `path?`, `output?` (content/files/count), `limit?` | the **grep replacement** for `.java`: semantic **symbol** matches ranked first, then labelled **text** matches (string-literal / comment / Javadoc), so it has no "wasn't-a-symbol" hole and is never worse than grep on coverage |
+
+**`grep_java` — the no-hole front door (M3).** Added so the agent can *reach for jcma first* on any
+`.java` search rather than grep-then-maybe-jcma: it subsumes `search_symbols` (≡ `grep_java(match=symbols)`)
+and degrades gracefully to a text tier, IntelliJ-shift+shift style. Routing is advisory and **portable**
+— carried in the MCP server instructions + the tool's own description, so it ships to every client at zero
+config (no `PreToolUse` hook; a hook is host-specific and was rejected, 2026-06-11). Large results
+rank-before-truncate and auto-collapse `content`→per-file `count`. jcma is a strict superset of grep only
+for `.java`; non-Java files stay on built-in grep.
 
 **MCP transport:** stdio (Claude Code launches the binary as a subprocess). Implementation:
 prefer a **minimal hand-rolled MCP/JSON-RPC stdio layer** to keep native-image clean and avoid
@@ -544,4 +564,13 @@ java-lsp/                      (consider renaming, e.g. jcma/)
     `response.budget.{pre_tokens, post_tokens, truncated, applied, bypassed}` + a `response.budget`
     timer; overhead proven within noise of `Metrics.noop()` (`BudgetOverheadTest`). An `isError` result
     **bypasses** budgeting and is returned verbatim.
+- **Degrade-to-text coverage + `grep_java` — *decided (M3)*:** jcma loses to built-in grep on
+  *coverage*, not protocol — grep has no "wasn't-a-symbol" hole, so the agent rationally greps first.
+  Fix = subsume grep for `.java`: a `grep_java` tool (§6) that ranks symbol matches first then degrades
+  to a labelled text tier backed by `text.seg` (§5.1: literals/comments/Javadoc, inline-snapshot scan,
+  measured ≈ 411 KB here / ~3.9 MB on commons-lang). Coverage **precedes** routing — a redirect onto a
+  symbol-only tool would force the agent onto a holey tool. Routing is therefore **advisory + portable**
+  (MCP server instructions + tool description, shipped to every client at zero config); a `PreToolUse`
+  hook was **rejected** (2026-06-11) as host-specific config that doesn't fit a client-agnostic server.
+  Still open: timing of any future `search_symbols` deprecation (kept for now — it is `grep_java(match=symbols)`).
 - **Exact navigation-correctness bar** for the M0 go/fall-back gate.

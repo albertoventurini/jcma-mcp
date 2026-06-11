@@ -47,7 +47,11 @@ public final class McpServer {
                     + "name — use jcma's tools rather than grep, plain text search, or reading files to hunt. "
                     + "jcma resolves symbols through the Java type system (imports, overloads, scope), so it "
                     + "returns the actual declaration and confirmed uses, not lookalike text. Reach for it for "
-                    + "any \"where is X defined\" or \"who uses X\" question about this project's Java sources.";
+                    + "any \"where is X defined\" or \"who uses X\" question about this project's Java sources. "
+                    + "To search Java source generally, use grep_java instead of grep on .java files: it ranks "
+                    + "semantic symbol matches first, then degrades to labelled text matches (string literals, "
+                    + "comments, Javadoc), so it is never worse than grep on coverage. (Non-Java files — Gradle, "
+                    + "JSON, Markdown — stay on built-in grep.)";
 
     private final InputStream in;
     private final PrintStream out;
