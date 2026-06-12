@@ -182,10 +182,13 @@ public final class EdgeResolver implements AutoCloseable {
     public References findReferences(Symbol target) {
         ensureResolved(target.name());
 
-        // Confirmed: incoming reference edges (exclude the structural CONTAINS edge from the container).
+        // Confirmed: incoming reference edges only. Skip every structural edge that carries no use site
+        // (CONTAINS, and the IMPLEMENTS/EXTENDS/OVERRIDES hierarchy edges): their Occurrence.NONE has no
+        // file/range, so emitting it as a Ref yields a location-less entry that NPEs any consumer of
+        // Ref.file(). The real `implements X`/`extends X` use sites are separate TYPE_REF edges, kept here.
         Map<String, List<Ref>> byEnclosing = new TreeMap<>();
         for (MonikerEdge e : store.rev(target.moniker())) {
-            if (e.type() == EdgeType.CONTAINS) {
+            if (e.occurrence().isNone()) {
                 continue;
             }
             Occurrence o = e.occurrence();

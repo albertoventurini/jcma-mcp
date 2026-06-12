@@ -29,6 +29,9 @@ class FindReferencesTest {
     private static final Path REFS = Path.of("src/test/resources/fixtures/resolve/refs");
     private static final String TARGET_MONIKER = "app/Service#run().";
 
+    private static final Path REFS_SUPERTYPE = Path.of("src/test/resources/fixtures/resolve/refs-supertype");
+    private static final String SHAPE_MONIKER = "app/Shape#";
+
     @Test
     void groupsConfirmedRefsByEnclosingSymbolWithCounts(@TempDir Path indexDir) throws Exception {
         index(REFS, indexDir);
@@ -77,7 +80,53 @@ class FindReferencesTest {
         }
     }
 
+    /**
+     * Regression (the crash): find_references on a type that is <b>implemented</b> ({@code Shape},
+     * implemented by {@code Circle} and {@code Square}) must not emit the structural {@code IMPLEMENTS}
+     * hierarchy edges as references. Those carry {@code Occurrence.NONE} (no file, {@code fileId ==
+     * -1}, {@code Range.NONE}); turning them into {@code Ref}s yields location-less entries that NPE
+     * the moment any consumer dereferences {@code Ref.file()} (the CLI printer, the MCP shaper),
+     * aborting the whole answer. Before the fix only {@code CONTAINS} was filtered.
+     *
+     * <p>But the <em>textual</em> {@code implements Shape} clauses ARE genuine {@code TYPE_REF}
+     * references (with real locations) and must be kept — the fix drops only the location-less
+     * duplicate, never the real supertype reference.
+     */
+    @Test
+    void dropsPhantomHierarchyEdgesButKeepsRealSupertypeReferences(@TempDir Path indexDir) throws Exception {
+        index(REFS_SUPERTYPE, indexDir);
+        try (EdgeResolver resolver =
+                EdgeResolver.open(indexDir, Workspace.ofSourceRoot(REFS_SUPERTYPE), Metrics.create())) {
+            References refs = resolver.findReferences(shapeType(resolver));
+
+            assertTrue(
+                    allRefs(refs).allMatch(r -> r.file() != null && r.fileId() >= 0 && !r.range().isNone()),
+                    "no location-less phantom ref from an IMPLEMENTS/EXTENDS hierarchy edge");
+            assertEquals(4, refs.totalRefs(),
+                    "Canvas field + Canvas param + `Circle implements Shape` + `Square implements Shape`");
+            assertTrue(
+                    allRefs(refs).anyMatch(r -> r.file().toString().endsWith("Circle.java")
+                            && r.snippet().contains("implements Shape")),
+                    "the `implements Shape` clause is kept as a confirmed reference with its real location");
+            assertTrue(
+                    allRefs(refs).anyMatch(r -> r.file().toString().endsWith("Square.java")
+                            && r.snippet().contains("implements Shape")),
+                    "both implementors' supertype clauses are confirmed references");
+        }
+    }
+
     // ------------------------------------------------------------------ helpers
+
+    private static java.util.stream.Stream<Ref> allRefs(References refs) {
+        return refs.groups().stream().flatMap(g -> g.refs().stream());
+    }
+
+    private static Symbol shapeType(EdgeResolver resolver) {
+        return resolver.declarations("Shape").stream()
+                .filter(s -> SHAPE_MONIKER.equals(s.moniker()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Shape type declaration not indexed"));
+    }
 
     private static Symbol target(EdgeResolver resolver) {
         return resolver.declarations("run").stream()
