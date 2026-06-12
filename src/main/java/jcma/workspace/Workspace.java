@@ -6,9 +6,14 @@ import jcma.index.SourceSet;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -46,6 +51,17 @@ public final class Workspace {
     /** The {@code package a.b.c;} declaration of a compilation unit (first occurrence). */
     private static final Pattern PACKAGE_DECL =
             Pattern.compile("(?m)^\\s*package\\s+([\\w.]+)\\s*;");
+
+    /**
+     * Directory names skipped by the per-module source-root walk: VCS/IDE metadata and build-output
+     * trees that can carry their own {@code src/main/java} (e.g. an exploded jar under {@code build/}),
+     * which would otherwise be mis-tagged as project source.
+     */
+    private static final Set<String> PRUNED_DIRS = Set.of(
+            ".git", ".gradle", ".idea", "build", "target", "out", "bin", "node_modules");
+
+    /** Defensive cap on the per-module walk depth, against pathological/symlinked trees. */
+    private static final int MODULE_WALK_MAX_DEPTH = 8;
 
     /**
      * Gradle init script (Groovy DSL) registering {@code jcmaPrintClasspath} on the root project: it
@@ -215,15 +231,23 @@ public final class Workspace {
      * {@code <testSourceDirectory>} → {@code TEST} (the {@code src/test/java} default is added only
      * when it exists). Without a build file: the standard {@code src/main/java} / {@code src/test/java}
      * dirs that exist, tagged by convention (covers standard Gradle too — build files aren't parsed).
-     * An ad-hoc tree with neither a pom nor the standard layout yields an empty list, leaving the
-     * caller to fall back (e.g. index the repo root as {@code MAIN}).
+     *
+     * <p>The root-level result is then <b>unioned</b> with a pruned recursive walk
+     * ({@link #findModuleSourceRoots}) that applies the same {@code src/main/java} / {@code src/test/java}
+     * convention <em>per module</em> — so a multi-module repo (e.g. Spring) whose root carries no
+     * {@code src/main/java}, only per-module ones, is discovered rather than yielding empty. The
+     * {@link LinkedHashSet} dedups the root-level dirs the walk re-finds.
+     *
+     * <p>An ad-hoc tree with neither a pom nor any {@code src/main/java} (root or per-module) yields an
+     * empty list, leaving the caller to fall back (e.g. index the repo root as {@code MAIN}).
      */
     public static List<SourceRoot> discoverSourceSets(Path projectRoot) {
+        Set<SourceRoot> roots = new LinkedHashSet<>();
         Path pom = projectRoot.resolve("pom.xml");
+        boolean pomParsed = false;
         if (Files.isRegularFile(pom)) {
             try {
                 String content = Files.readString(pom);
-                List<SourceRoot> roots = new ArrayList<>();
                 roots.add(new SourceRoot(
                         projectRoot.resolve(group(SOURCE_DIRECTORY, content, "src/main/java")), SourceSet.MAIN));
                 String declaredTest = group(TEST_SOURCE_DIRECTORY, content, null);
@@ -232,15 +256,59 @@ public final class Workspace {
                 } else {
                     addIfDir(roots, projectRoot.resolve("src/test/java"), SourceSet.TEST);
                 }
-                return roots;
+                pomParsed = true;
             } catch (IOException ignore) {
                 // fall through to convention-based discovery
             }
         }
-        List<SourceRoot> roots = new ArrayList<>();
-        addIfDir(roots, projectRoot.resolve("src/main/java"), SourceSet.MAIN);
-        addIfDir(roots, projectRoot.resolve("src/test/java"), SourceSet.TEST);
-        return roots;
+        if (!pomParsed) {
+            addIfDir(roots, projectRoot.resolve("src/main/java"), SourceSet.MAIN);
+            addIfDir(roots, projectRoot.resolve("src/test/java"), SourceSet.TEST);
+        }
+        roots.addAll(findModuleSourceRoots(projectRoot));
+        return List.copyOf(roots);
+    }
+
+    private static final Path SRC_MAIN_JAVA = Path.of("src", "main", "java");
+    private static final Path SRC_TEST_JAVA = Path.of("src", "test", "java");
+
+    /**
+     * Recursively collect every {@code src/main/java} ({@code MAIN}) / {@code src/test/java}
+     * ({@code TEST}) directory under {@code projectRoot}, applying the convention <em>per module</em>.
+     * Path-sorted for determinism. Prunes {@link #PRUNED_DIRS} (VCS/IDE/build-output trees), does not
+     * descend into a matched root (its children are packages, not modules — saving the deep walk), and
+     * caps depth at {@link #MODULE_WALK_MAX_DEPTH}. Hermetic — no build tool is run.
+     */
+    private static List<SourceRoot> findModuleSourceRoots(Path projectRoot) {
+        List<SourceRoot> found = new ArrayList<>();
+        try {
+            Files.walkFileTree(projectRoot, Set.of(), MODULE_WALK_MAX_DEPTH,
+                    new SimpleFileVisitor<>() {
+                        @Override
+                        public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                            if (dir.equals(projectRoot)) {
+                                return FileVisitResult.CONTINUE;
+                            }
+                            Path name = dir.getFileName();
+                            if (name != null && PRUNED_DIRS.contains(name.toString())) {
+                                return FileVisitResult.SKIP_SUBTREE;
+                            }
+                            if (dir.endsWith(SRC_MAIN_JAVA)) {
+                                found.add(new SourceRoot(dir, SourceSet.MAIN));
+                                return FileVisitResult.SKIP_SUBTREE;
+                            }
+                            if (dir.endsWith(SRC_TEST_JAVA)) {
+                                found.add(new SourceRoot(dir, SourceSet.TEST));
+                                return FileVisitResult.SKIP_SUBTREE;
+                            }
+                            return FileVisitResult.CONTINUE;
+                        }
+                    });
+        } catch (IOException ignore) {
+            // unreadable tree → whatever the root-level convention already found
+        }
+        found.sort(Comparator.comparing(r -> r.dir().toString()));
+        return found;
     }
 
     /** The trimmed first capture of {@code p} in {@code content}, or {@code dflt} if absent/blank. */
@@ -256,7 +324,7 @@ public final class Workspace {
     }
 
     /** Append {@code SourceRoot(dir, set)} iff {@code dir} is an existing directory. */
-    private static void addIfDir(List<SourceRoot> roots, Path dir, SourceSet set) {
+    private static void addIfDir(Collection<SourceRoot> roots, Path dir, SourceSet set) {
         if (Files.isDirectory(dir)) {
             roots.add(new SourceRoot(dir, set));
         }

@@ -232,10 +232,16 @@ cache already collapses Tier-1 across queries). So:
    parse+resolve mass, and its serial floor is tiny (~2%) — but it carries the silent-wrong concurrency
    risk (above), and levers 1–2 shrink the mass it would parallelize. Reduce, then parallelize.
 
-> **Open thread (separate investigation):** on this Spring index `getName` and `getBean` return
-> **near-zero confirmed references** — resolution lands almost entirely in the unconfirmed tail (e.g.
-> `getName`: 4958 value occurrences, ~0 confirmed). `Nullable` confirms normally (2 refs, 194
-> unconfirmed). This smells like a **classpath-completeness / value-resolution** gap on Spring, not a
-> perf issue — the parse/resolve *split* is unaffected (the candidate files are parsed and resolved
-> either way), but the **correctness** of value-name resolution on a large real repo needs its own
-> look. Flagged here so it isn't lost.
+> **Open thread — RESOLVED (2026-06-12):** on this Spring index `getName` and `getBean` returned
+> **near-zero confirmed references** (e.g. `getName`: 4958 value occurrences, ~0 confirmed), while
+> `Nullable` confirmed normally (2 refs, 194 unconfirmed). Root cause was **not** the resolver and not
+> a perf issue: it was **multi-module source-root discovery**. `Workspace.discoverSourceSets` applied
+> the `src/main/java` / `src/test/java` convention only at the *repo root*. Spring's root has no such
+> dir — its sources live in 24 per-module roots — so discovery returned empty, indexing/resolution fell
+> back to registering the **repo root** as one source-solver root, and `JavaParserTypeSolver`'s
+> package→path mapping then made every `org.springframework.*` type invisible → mass MISSING_CLASSPATH
+> → ~0 confirmed. Fix: a pruned recursive **per-module** convention walk (`findModuleSourceRoots`) that
+> unions every nested `src/main|test/java` into the discovered set. Pure source→source (empty classpath)
+> already flips `getBean` to 4073 confirmed / 498 tail; single-module repos (commons-lang) were always
+> fine because their root `src/main/java` exists. Hermetic by design — no build tool runs at index time;
+> deriving roots from the evaluated Gradle/Maven model stays a possible future *query-time-only* layer.

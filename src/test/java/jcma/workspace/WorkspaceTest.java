@@ -113,6 +113,25 @@ class WorkspaceTest {
                 "no build model and no standard layout → nothing discovered (caller falls back)");
     }
 
+    @Test
+    void discoverSourceSetsFindsPerModuleRoots(@TempDir Path root) throws Exception {
+        // A multi-module repo (Spring-style): no root-level src/main/java; sources live in per-module
+        // roots. A build-output dir carrying its own src/main/java must be pruned, not indexed.
+        Files.createDirectories(root.resolve("moduleA/src/main/java"));
+        Files.createDirectories(root.resolve("moduleA/src/test/java"));
+        Files.createDirectories(root.resolve("moduleB/src/main/java"));
+        Files.createDirectories(root.resolve("build/src/main/java")); // decoy: build output
+
+        List<SourceRoot> roots = Workspace.discoverSourceSets(root);
+
+        assertEquals(
+                List.of(new SourceRoot(root.resolve("moduleA/src/main/java"), SourceSet.MAIN),
+                        new SourceRoot(root.resolve("moduleA/src/test/java"), SourceSet.TEST),
+                        new SourceRoot(root.resolve("moduleB/src/main/java"), SourceSet.MAIN)),
+                roots,
+                "per-module src/main|test/java roots, path-sorted, with the build/ decoy pruned");
+    }
+
     // ---------------------------------------------------------------- Gradle root discovery
 
     @Test
