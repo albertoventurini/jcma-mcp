@@ -1,5 +1,6 @@
 package jcma.workspace;
 
+import jcma.engine.UsageSite;
 import jcma.index.FileIndex;
 import jcma.index.Indexer;
 import jcma.index.LsmStore;
@@ -137,9 +138,11 @@ public final class Reconciler {
         // 4. Re-parse the new+changed set in parallel and apply each through the store.
         int symbols = 0;
         long loc = 0;
+        Map<Integer, List<UsageSite>> usagesByFile = Map.of();
         if (!toParse.isEmpty()) {
             Indexer.ParseResult parsed = indexer.parseAll(toParse);
             loc = parsed.loc();
+            usagesByFile = parsed.usagesByFile();
             for (FileIndex fi : parsed.indices()) {
                 if (fi != null) {
                     store.applyEdit(fi);
@@ -148,9 +151,9 @@ public final class Reconciler {
             }
         }
 
-        // 5. Fold edits into a fresh base only if there were any; persist the table if it changed.
+        // 5. Rebuild the usage-name index, then fold edits into a fresh base. Both only run if
+        //    something changed; the table is persisted iff it changed.
         if (added + changed + deleted > 0) {
-            store.compact();
             // Rebuild the usage-name index (find_references prune) from the current file set. A full
             // rebuild is correct; task-11 makes it incremental. Ids come from the just-updated table.
             Map<Integer, Path> filesById = new HashMap<>();
@@ -160,7 +163,16 @@ public final class Reconciler {
                     filesById.put(te.fileId(), e.getValue().absolute());
                 }
             }
-            UsageNameIndexer.build(indexDir, filesById);
+            // If this pass re-parsed every current file (the cold index: empty table → all new), the
+            // use-sites are already in hand — build the index from them with no second parse. Otherwise
+            // (incremental: some unchanged files were not re-parsed) fall back to the re-parse build.
+            if (usagesByFile.keySet().containsAll(filesById.keySet())) {
+                UsageNameIndexer.buildFrom(indexDir, usagesByFile);
+            } else {
+                UsageNameIndexer.build(indexDir, filesById);
+            }
+            usagesByFile = null; // release before compaction: don't stack usages + compaction buffers
+            store.compact();
         }
         if (tableDirty) {
             table.save(indexDir);

@@ -3,6 +3,7 @@ package jcma.index;
 import jcma.engine.FileOutline;
 import jcma.engine.Outline;
 import jcma.engine.StructuralParser;
+import jcma.engine.UsageSite;
 import jcma.obs.Metrics;
 
 import java.io.IOException;
@@ -10,7 +11,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -47,9 +50,16 @@ public final class Indexer {
     /** One file to parse-extract under a caller-assigned (stable) {@code fileId} and source-set tag. */
     public record ParseRequest(int fileId, Path path, SourceSet sourceSet) {}
 
+    /** The two projections carried out of a single parse for one file: its {@link FileIndex}
+     * (symbols + edges + text) and its use-sites (the usage-name index input — see {@link
+     * UsageNameIndexer#buildFrom}). The usages ride a side channel rather than {@link FileIndex} so
+     * they are not retained through the store overlay/compaction. */
+    public record ParsedFile(FileIndex index, List<UsageSite> usages) {}
+
     /** The result of a parallel parse pass: the per-request {@link FileIndex}es (nulls = parse
-     * failures, positionally aligned with the requests) and the total lines of code read. */
-    public record ParseResult(List<FileIndex> indices, long loc) {}
+     * failures, positionally aligned with the requests), the use-sites collected off the <em>same</em>
+     * parse keyed by {@code fileId} (the parse-free usage-name build path), and the total LOC read. */
+    public record ParseResult(List<FileIndex> indices, Map<Integer, List<UsageSite>> usagesByFile, long loc) {}
 
     private final StructuralParser parser = new StructuralParser();
     private final Metrics metrics;
@@ -78,6 +88,15 @@ public final class Indexer {
      * root's tag. The tag is packed into {@link Symbol#flags()} (see {@link SourceSet}).
      */
     public FileIndex indexFile(int fileId, Path file, SourceSet sourceSet) throws IOException {
+        return collectFile(fileId, file, sourceSet).index();
+    }
+
+    /**
+     * As {@link #indexFile(int, Path, SourceSet)}, but also carries out the file's use-sites — both
+     * projections off the <em>same</em> parse, so the cold-index pass need not re-parse every file to
+     * build {@code usage-names.seg} (see {@link UsageNameIndexer#buildFrom}).
+     */
+    ParsedFile collectFile(int fileId, Path file, SourceSet sourceSet) throws IOException {
         StructuralParser.Parsed parsed = parser.collect(file);
         FileOutline fo = parsed.outline();
         List<Symbol> symbols = new ArrayList<>();
@@ -86,8 +105,10 @@ public final class Indexer {
         for (Outline type : fo.types()) {
             walk(type, packageMoniker, null, fo.packageName(), fileId, sourceSet, symbols, edges);
         }
-        // Third projection off the same parse (M3 task-01): the D2 text corpus, no extra parse.
-        return new FileIndex(fileId, symbols, edges, parsed.textUnits());
+        // Three projections off the same parse: declarations (symbols/edges), the D2 text corpus
+        // (M3 task-01), and the use-sites (the usage-name index input) — no extra parse for any.
+        FileIndex index = new FileIndex(fileId, symbols, edges, parsed.textUnits());
+        return new ParsedFile(index, parsed.usages());
     }
 
     /**
@@ -136,25 +157,34 @@ public final class Indexer {
      */
     public ParseResult parseAll(List<ParseRequest> requests) throws IOException {
         List<FileIndex> extracted = new ArrayList<>(requests.size());
+        Map<Integer, List<UsageSite>> usagesByFile = new HashMap<>(requests.size() * 2);
         AtomicLong loc = new AtomicLong();
         try (ExecutorService pool = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors())) {
-            List<Future<FileIndex>> futures = new ArrayList<>(requests.size());
+            List<Future<ParsedFile>> futures = new ArrayList<>(requests.size());
             for (ParseRequest req : requests) {
                 futures.add(pool.submit(() -> {
                     loc.addAndGet(countLines(req.path()));
                     long parseStart = System.nanoTime();
                     try {
-                        FileIndex fi = indexFile(req.fileId(), req.path(), req.sourceSet());
+                        ParsedFile pf = collectFile(req.fileId(), req.path(), req.sourceSet());
                         metrics.timer("index.parse").record(System.nanoTime() - parseStart); // per file, not per symbol
-                        return fi;
+                        return pf;
                     } catch (IOException e) {
                         System.err.println("jcma: skip (parse failed): " + req.path() + " — " + e.getMessage());
                         return null;
                     }
                 }));
             }
-            for (Future<FileIndex> future : futures) {
-                extracted.add(future.get());
+            // Aggregate sequentially as futures complete (HashMap is not thread-safe; the per-file
+            // parse stays parallel — this loop only collects already-computed results).
+            for (int i = 0; i < requests.size(); i++) {
+                ParsedFile pf = futures.get(i).get();
+                if (pf == null) {
+                    extracted.add(null);
+                } else {
+                    extracted.add(pf.index());
+                    usagesByFile.put(requests.get(i).fileId(), pf.usages());
+                }
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -162,7 +192,7 @@ public final class Indexer {
         } catch (ExecutionException e) {
             throw new IOException("indexing failed: " + e.getCause(), e.getCause());
         }
-        return new ParseResult(extracted, loc.get());
+        return new ParseResult(extracted, usagesByFile, loc.get());
     }
 
     // ------------------------------------------------------------------ outline → symbols

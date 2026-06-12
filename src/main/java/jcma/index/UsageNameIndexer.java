@@ -5,6 +5,7 @@ import jcma.engine.UsageSite;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -48,6 +49,25 @@ public final class UsageNameIndexer {
                 }
             } catch (IOException skip) {
                 // unparseable here too → no usage rows for this file (not fatal)
+            }
+        }
+        UsageNameIndex.write(indexDir.resolve(FILE_NAME), byName);
+    }
+
+    /**
+     * Parse-free counterpart of {@link #build}: accumulate {@code usage-names.seg} directly from
+     * use-sites already collected off the cold-index parse ({@code fileId → that file's use-sites},
+     * from {@link Indexer.ParseResult#usagesByFile()}), so no file is parsed a second time. Produces
+     * a byte-identical segment to {@code build} over the same file set — the two are equivalent
+     * producers, this one just reuses pass-1's parse. Used when every current file was re-parsed this
+     * pass (cold index); {@link #build} remains the fallback for the incremental case.
+     */
+    public static void buildFrom(Path indexDir, Map<Integer, List<UsageSite>> usagesByFile)
+            throws IOException {
+        TreeMap<String, TreeSet<Integer>> byName = new TreeMap<>();
+        for (Map.Entry<Integer, List<UsageSite>> e : usagesByFile.entrySet()) {
+            for (UsageSite u : e.getValue()) {
+                byName.computeIfAbsent(u.targetName(), k -> new TreeSet<>()).add(e.getKey());
             }
         }
         UsageNameIndex.write(indexDir.resolve(FILE_NAME), byName);
