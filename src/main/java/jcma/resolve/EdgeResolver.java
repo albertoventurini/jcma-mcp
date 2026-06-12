@@ -17,14 +17,12 @@ import jcma.engine.UsageSite;
 import jcma.index.CompactionPolicy;
 import jcma.index.EdgeType;
 import jcma.index.FileIndex;
-import jcma.index.Indexer;
 import jcma.index.LsmStore;
 import jcma.index.MonikerEdge;
 import jcma.index.Occurrence;
 import jcma.index.Range;
 import jcma.index.Symbol;
 import jcma.index.SymbolKind;
-import jcma.index.SourceSet;
 import jcma.index.UsageNameIndex;
 import jcma.index.UsageNameIndexer;
 import jcma.obs.Metrics;
@@ -57,7 +55,6 @@ public final class EdgeResolver implements AutoCloseable {
     private final UsageNameIndex usageIndex; // null if usage-names.seg is absent
     private final FileTable fileTable;
     private final AnalysisEngine engine;
-    private final Indexer indexer;
     private final Path repoRoot;
     private final Metrics metrics;
     private final Hierarchy hierarchy = new Hierarchy(this); // transitive type-hierarchy walk (task-05)
@@ -100,7 +97,7 @@ public final class EdgeResolver implements AutoCloseable {
      * layer is. The applied {@link FileIndex} is the union of {@link #base} (Tier-1) + {@link
      * #valueEdges} (all resolved names) + {@link #structuralEdges} (type-ref + hierarchy edges).
      */
-    private static final class FileSlice {
+    static final class FileSlice {
         final List<Symbol> symbols;           // Tier-1 declarations
         final List<MonikerEdge> base;         // Tier-1 structural edges (e.g. CONTAINS)
         final List<TextUnit> texts;           // Tier-1 D2 text units (re-emitted so Tier-2 doesn't drop them)
@@ -127,12 +124,11 @@ public final class EdgeResolver implements AutoCloseable {
     }
 
     private EdgeResolver(LsmStore store, UsageNameIndex usageIndex, FileTable fileTable,
-            AnalysisEngine engine, Indexer indexer, Path repoRoot, Metrics metrics) {
+            AnalysisEngine engine, Path repoRoot, Metrics metrics) {
         this.store = store;
         this.usageIndex = usageIndex;
         this.fileTable = fileTable;
         this.engine = engine;
-        this.indexer = indexer;
         this.repoRoot = repoRoot;
         this.metrics = metrics;
         for (Symbol s : store.liveSymbols()) {
@@ -153,19 +149,20 @@ public final class EdgeResolver implements AutoCloseable {
         FileTable fileTable = FileTable.load(indexDir);
         AnalysisEngine engine = new JavaParserEngine(workspace);
         Path repoRoot = workspace.projectRoot().toAbsolutePath().normalize();
-        return new EdgeResolver(store, usageIndex, fileTable, engine, new Indexer(), repoRoot, metrics);
+        return new EdgeResolver(store, usageIndex, fileTable, engine, repoRoot, metrics);
     }
 
     /**
      * Open a resolver over an <b>already-constructed</b> shared state — used by {@code AnalysisSession}
      * so the Tier-1 freshness guard and this Tier-2 resolver mutate and read the <em>same</em> live
-     * {@link LsmStore} + {@link FileTable} + {@link Indexer} (the prerequisite for the node-diff
-     * cascade, task-11c). {@link #close()} closes the shared store, so the session must own a single
-     * resolver as the store's closer.
+     * {@link LsmStore} + {@link FileTable} (the prerequisite for the node-diff cascade, task-11c). The
+     * resolver never re-parses Tier-1 (it reads the persisted base back via {@link #tier1Slice}), so it
+     * holds no {@code Indexer}. {@link #close()} closes the shared store, so the session must own a
+     * single resolver as the store's closer.
      */
     public static EdgeResolver over(LsmStore store, UsageNameIndex usageIndex, FileTable fileTable,
-            AnalysisEngine engine, Indexer indexer, Path repoRoot, Metrics metrics) {
-        return new EdgeResolver(store, usageIndex, fileTable, engine, indexer, repoRoot, metrics);
+            AnalysisEngine engine, Path repoRoot, Metrics metrics) {
+        return new EdgeResolver(store, usageIndex, fileTable, engine, repoRoot, metrics);
     }
 
     /** Declarations whose simple name equals {@code name} (the by-name target selector). */
@@ -324,7 +321,7 @@ public final class EdgeResolver implements AutoCloseable {
             return;
         }
         try {
-            FileSlice slice = sliceFor(fid, path);
+            FileSlice slice = sliceFor(fid);
             boolean needValue = !slice.names.contains(simpleName);
             boolean needTypeRefs = !slice.typeRefNames.contains(simpleName);
             if (!needValue && !needTypeRefs) {
@@ -354,19 +351,47 @@ public final class EdgeResolver implements AutoCloseable {
         }
     }
 
-    /** The file's slice, building its Tier-1 base (symbols + structural edges) on first touch. */
-    private FileSlice sliceFor(int fid, Path path) throws IOException {
+    /** The file's slice, building its Tier-1 base (symbols + structural edges + texts) on first touch. */
+    private FileSlice sliceFor(int fid) {
         FileSlice slice = slices.get(fid);
         if (slice == null) {
-            // Perf split: the Tier-1 *structural* parse is a second, lighter parse per file (distinct
-            // from engine.parse's semantic AST) — on a cold query it fires once for every candidate.
+            // resolve.tier1 used to time a second structural re-parse per candidate; it now times the
+            // store read-back (lever #1) — the drop of this timer to ~0 is the measured win.
             long t0 = System.nanoTime();
-            FileIndex tier1 = indexer.indexFile(fid, path, sourceSetOf(fid));
+            slice = tier1Slice(fid);
             metrics.timer("resolve.tier1").record(System.nanoTime() - t0);
-            slice = new FileSlice(tier1.symbols(), new ArrayList<>(tier1.edges()), tier1.texts());
             slices.put(fid, slice);
         }
         return slice;
+    }
+
+    /**
+     * Build {@code fid}'s Tier-1 base from already-persisted state — no re-parse. Resolve-path
+     * realization of lever #1 (docs/structural-resolve-split-and-parse-cache.md): the Tier-1 skeleton
+     * was written at index time, so the cold {@code find_references} path reads it back instead of
+     * re-parsing every candidate.
+     *
+     * <p>Principle — read before you re-parse. Every Tier-1 fact is persisted, so it is always
+     * recoverable without the parser; only the recovery rung differs:
+     * <ol>
+     *   <li>node-derived edges (CONTAINS = enclosingMoniker -&gt; moniker, NONE; {@code Indexer.walk})
+     *       -&gt; rebuild from the symbols we already hold in {@code symbolsByFile}. Free; used here.
+     *   <li>an edge carrying non-node data (a future IMPORTS edge to an external FQN, a by-name ref)
+     *       -&gt; not reconstructible from nodes; read it back from the store ({@code baseSym.idOf}
+     *       -&gt; {@code baseCsr.fwd} from this file's known monikers, O(degree) not a scan). Still no parse.
+     *   <li>re-parse only for a fact that was never persisted — no Tier-1 edge is in this category.
+     * </ol>
+     * The {@code tier1EdgesAreNodeDerived} guard test pins assumption (1).
+     */
+    FileSlice tier1Slice(int fid) {
+        List<Symbol> symbols = new ArrayList<>(symbolsByFile.getOrDefault(fid, List.of()));
+        List<MonikerEdge> base = new ArrayList<>();
+        for (Symbol s : symbols) {
+            if (s.enclosingMoniker() != null) {
+                base.add(new MonikerEdge(s.enclosingMoniker(), s.moniker(), EdgeType.CONTAINS, Occurrence.NONE));
+            }
+        }
+        return new FileSlice(symbols, base, store.textsOf(fid));
     }
 
     /**
@@ -609,7 +634,7 @@ public final class EdgeResolver implements AutoCloseable {
             return;
         }
         try {
-            FileSlice slice = sliceFor(fid, path);
+            FileSlice slice = sliceFor(fid);
             if (slice.hierarchy) {
                 return;
             }
@@ -677,7 +702,7 @@ public final class EdgeResolver implements AutoCloseable {
             return;
         }
         try {
-            FileSlice slice = sliceFor(fileId, path);
+            FileSlice slice = sliceFor(fileId);
             ParsedUnit unit = engine.parse(path);
             resolveHierarchyInto(slice, fileId, unit);
             for (String name : typeRefNames) {
@@ -703,7 +728,10 @@ public final class EdgeResolver implements AutoCloseable {
         if (path == null || !Files.isRegularFile(path)) {
             return;
         }
-        store.applyEdit(indexer.indexFile(fileId, path, sourceSetOf(fileId)));
+        // A fresh slice's toIndex is base-only (Tier-1-only), so re-applying it drops the file's Tier-2
+        // edges. dropTier2 only ever touches unchanged referrer files, so the store == disk: the slice
+        // reconstructed from the store is exactly the file's persisted Tier-1 skeleton (no re-parse).
+        store.applyEdit(tier1Slice(fileId).toIndex(fileId));
         refreshSymbols(fileId);
         slices.remove(fileId);
     }
@@ -905,12 +933,6 @@ public final class EdgeResolver implements AutoCloseable {
     private Path absPathOf(int fileId) {
         Path rel = fileTable.pathOf(fileId);
         return rel == null ? null : repoRoot.resolve(rel);
-    }
-
-    private SourceSet sourceSetOf(int fileId) {
-        Path rel = fileTable.pathOf(fileId);
-        FileTable.Entry e = rel == null ? null : fileTable.get(rel);
-        return e == null ? SourceSet.MAIN : e.sourceSet();
     }
 
     /** A moniker's display: its indexed signature, the bare phantom signature ({@code ~fqn} → {@code fqn}), or the moniker. */

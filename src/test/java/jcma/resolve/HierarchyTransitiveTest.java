@@ -16,7 +16,6 @@ import jcma.index.Symbol;
 import jcma.index.SymbolKind;
 import jcma.obs.Metrics;
 import jcma.engine.JavaParserEngine;
-import jcma.index.Indexer;
 import jcma.workspace.FileTable;
 import jcma.workspace.Workspace;
 
@@ -141,7 +140,7 @@ class HierarchyTransitiveTest {
     /** A bare resolver over a hand-built heap store (no real files → warming is a no-op, edges stand). */
     private static EdgeResolver over(LsmStore store) {
         return EdgeResolver.over(store, null, emptyTable(),
-                new JavaParserEngine(Workspace.ofSourceRoot(CHAIN)), new Indexer(),
+                new JavaParserEngine(Workspace.ofSourceRoot(CHAIN)),
                 CHAIN.toAbsolutePath().normalize(), Metrics.noop());
     }
 

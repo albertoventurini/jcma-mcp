@@ -67,6 +67,32 @@ class LsmStoreTextTest {
     }
 
     @Test
+    void textsOfReturnsAFilesUnitsFromOverlayThenBase(@TempDir Path dir) throws IOException {
+        try (LsmStore store = LsmStore.open(dir, CompactionPolicy.manual())) {
+            store.applyEdit(fileWithText(0, TextKind.COMMENT, "TODO alpha"));
+            List<TextUnit> overlay = store.textsOf(0);
+            assertEquals(1, overlay.size(), "an overlaid file's texts are read back before compaction");
+            assertEquals("TODO alpha", overlay.get(0).text());
+
+            store.compact();
+            List<TextUnit> base = store.textsOf(0);
+            assertEquals(1, base.size(), "the same texts are read back from the base after compaction");
+            assertEquals("TODO alpha", base.get(0).text());
+            assertEquals(TextKind.COMMENT, base.get(0).kind());
+        }
+    }
+
+    @Test
+    void textsOfIsEmptyForAnUnknownFileOrNoTextSeg(@TempDir Path dir) throws IOException {
+        try (LsmStore store = LsmStore.open(dir, CompactionPolicy.manual())) {
+            assertTrue(store.textsOf(42).isEmpty(), "cold store (no text.seg, no overlay) → empty, never null");
+            store.applyEdit(fileWithText(0, TextKind.STRING_LITERAL, "alpha"));
+            store.compact();
+            assertTrue(store.textsOf(99).isEmpty(), "a file absent from the base segment → empty");
+        }
+    }
+
+    @Test
     void deletingAFileRemovesItsTextHits(@TempDir Path dir) throws IOException {
         try (LsmStore store = LsmStore.open(dir, CompactionPolicy.manual())) {
             store.applyEdit(fileWithText(0, TextKind.JAVADOC, "looks up alpha by id"));

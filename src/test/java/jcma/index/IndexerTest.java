@@ -8,8 +8,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -107,6 +109,29 @@ class IndexerTest {
         assertEquals(3, circle.fileId(), "fileId is the one passed in");
         assertTrue(circle.range().startLine() >= 1, "a real declaration range");
         assertTrue(circle.range().endLine() >= circle.range().startLine());
+    }
+
+    @Test
+    void tier1EdgesAreNodeDerived() throws IOException {
+        // Tier-1 emits only CONTAINS, node-derived (enclosingMoniker -> moniker) — what lets
+        // EdgeResolver rebuild a file's Tier-1 base with no re-parse. Add a Tier-1 edge type and this
+        // fails by design: pick its recovery rung (node-derived -> reconstruct; non-node data -> read
+        // back from the store; never re-parse) and update tier1Slice first.
+        FileIndex fi = indexer.indexFile(0, SHAPES.resolve("Circle.java"));
+        for (MonikerEdge e : fi.edges()) {
+            assertEquals(EdgeType.CONTAINS, e.type(), "Tier-1 emits only CONTAINS: " + e);
+            assertTrue(e.occurrence().isNone(), "a node-derived edge carries no occurrence: " + e);
+        }
+        // The reconstruction EdgeResolver.tier1Slice performs: every edge derived from the symbols alone.
+        Set<MonikerEdge> reconstructed = new HashSet<>();
+        for (Symbol s : fi.symbols()) {
+            if (s.enclosingMoniker() != null) {
+                reconstructed.add(new MonikerEdge(s.enclosingMoniker(), s.moniker(),
+                        EdgeType.CONTAINS, Occurrence.NONE));
+            }
+        }
+        assertEquals(new HashSet<>(fi.edges()), reconstructed,
+                "every Tier-1 edge reconstructs from the symbols — no edge carries non-node data");
     }
 
     // ------------------------------------------------------------------ helpers

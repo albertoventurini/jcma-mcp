@@ -393,6 +393,21 @@ public final class LsmStore implements AutoCloseable {
         return out;
     }
 
+    /**
+     * The live D2 text units of {@code fileId}: its overlay slice's texts if the file is overlaid
+     * (an edit or an empty tombstone), else the base segment's units ({@link TextIndex#unitsOf},
+     * binary-searched), else {@code List.of()} for an unknown file or a pre-M3 index with no {@code
+     * text.seg}. Mirrors {@link #symbolsOf}; the Tier-1 resolve path reads a candidate file's persisted
+     * text back from here instead of re-parsing it.
+     */
+    public List<TextUnit> textsOf(int fileId) {
+        FileIndex ov = edited.get(fileId);
+        if (ov != null) {
+            return new ArrayList<>(ov.texts());
+        }
+        return baseText == null ? List.of() : baseText.unitsOf(fileId);
+    }
+
     /** Number of files currently held in the overlay (edited or tombstoned since the last compaction). */
     public int overlayFileCount() {
         return edited.size();

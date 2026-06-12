@@ -91,7 +91,7 @@ public final class AnalysisSession implements AutoCloseable {
         AnalysisEngine engine = new JavaParserEngine(workspace);
         Path repoRoot = workspace.projectRoot().toAbsolutePath().normalize();
 
-        EdgeResolver resolver = EdgeResolver.over(store, usageIndex, fileTable, engine, indexer, repoRoot, metrics);
+        EdgeResolver resolver = EdgeResolver.over(store, usageIndex, fileTable, engine, repoRoot, metrics);
         FreshnessGuard guard = new FreshnessGuard(repoRoot, indexDir, fileTable, store, indexer, source,
                 Workspace.discoverSourceSets(repoRoot), metrics);
         Cascade cascade = new Cascade(guard, resolver, store);
@@ -117,7 +117,7 @@ public final class AnalysisSession implements AutoCloseable {
 
         // No proactive change producer: read-only never reindexes, so there is nothing to drain.
         FreshnessSource source = FreshnessSource.none();
-        EdgeResolver resolver = EdgeResolver.over(store, usageIndex, fileTable, engine, indexer, repoRoot, metrics);
+        EdgeResolver resolver = EdgeResolver.over(store, usageIndex, fileTable, engine, repoRoot, metrics);
         FreshnessGuard guard = new FreshnessGuard(repoRoot, indexDir, fileTable, store, indexer, source,
                 Workspace.discoverSourceSets(repoRoot), metrics);
         Cascade cascade = new Cascade(guard, resolver, store);

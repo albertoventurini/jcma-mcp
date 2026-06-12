@@ -7,7 +7,6 @@ import jcma.IndexFixture;
 import jcma.engine.JavaParserEngine;
 import jcma.index.CompactionPolicy;
 import jcma.index.EdgeType;
-import jcma.index.Indexer;
 import jcma.index.LsmStore;
 import jcma.index.MonikerEdge;
 import jcma.index.Symbol;
@@ -151,7 +150,7 @@ class StructuralResolveSplitTest {
         UsageNameIndex usageIndex = Files.exists(usagePath) ? UsageNameIndex.load(usagePath) : null;
         FileTable fileTable = FileTable.load(indexDir);
         Path repoRoot = Workspace.ofSourceRoot(repo).projectRoot().toAbsolutePath().normalize();
-        return EdgeResolver.over(store, usageIndex, fileTable, engine, new Indexer(), repoRoot, metrics);
+        return EdgeResolver.over(store, usageIndex, fileTable, engine, repoRoot, metrics);
     }
 
     private static CountingEngine engineFor(Path repo) {
