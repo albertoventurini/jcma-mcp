@@ -330,14 +330,24 @@ public final class EdgeResolver implements AutoCloseable {
             if (!needValue && !needTypeRefs) {
                 return; // (file, name) value + type-ref layers both cached
             }
+            // Perf split (the parse-cache-vs-parallelism decision): time the *explicit* parse of this
+            // candidate file separately from resolution. NB the *implicit* parse (the source TypeSolver
+            // re-parsing other files that .resolve() chases into) is folded into resolve.values/typerefs,
+            // not here — so resolve.parse is a lower bound on what an AST cache could reclaim.
+            long t0 = System.nanoTime();
             ParsedUnit unit = engine.parse(path);
+            metrics.timer("resolve.parse").record(System.nanoTime() - t0);
             if (needTypeRefs) {
                 resolveTypeRefsInto(slice, fid, unit, simpleName);
             }
             if (needValue) {
                 resolveValueInto(slice, fid, unit, simpleName);
             }
+            // Perf split: the store write is the serial, single-writer leg — neither the parse cache
+            // nor parallel resolve reclaims it, so isolating it bounds what those two levers can win.
+            long ta = System.nanoTime();
             store.applyEdit(slice.toIndex(fid));
+            metrics.timer("resolve.apply").record(System.nanoTime() - ta);
             metrics.counter("resolve.files").add(1);
         } catch (IOException skip) {
             // parse failure: leave whatever is cached (it cannot resolve), surface nothing
@@ -348,7 +358,11 @@ public final class EdgeResolver implements AutoCloseable {
     private FileSlice sliceFor(int fid, Path path) throws IOException {
         FileSlice slice = slices.get(fid);
         if (slice == null) {
+            // Perf split: the Tier-1 *structural* parse is a second, lighter parse per file (distinct
+            // from engine.parse's semantic AST) — on a cold query it fires once for every candidate.
+            long t0 = System.nanoTime();
             FileIndex tier1 = indexer.indexFile(fid, path, sourceSetOf(fid));
+            metrics.timer("resolve.tier1").record(System.nanoTime() - t0);
             slice = new FileSlice(tier1.symbols(), new ArrayList<>(tier1.edges()), tier1.texts());
             slices.put(fid, slice);
         }
@@ -361,7 +375,10 @@ public final class EdgeResolver implements AutoCloseable {
      */
     private void resolveValueInto(FileSlice slice, int fid, ParsedUnit unit, String simpleName) {
         slice.names.add(simpleName);
-        for (ResolvedOccurrence o : engine.resolveOccurrences(unit, simpleName)) {
+        long t0 = System.nanoTime();
+        List<ResolvedOccurrence> occurrences = engine.resolveOccurrences(unit, simpleName);
+        metrics.timer("resolve.values").record(System.nanoTime() - t0);
+        for (ResolvedOccurrence o : occurrences) {
             // Observability (perf gate): every occurrence here was a value-name .resolve() — the
             // cubic-cost class. resolve.values isolates it; resolve.occurrences is the all-kinds total.
             metrics.counter("resolve.occurrences").add(1);
@@ -379,7 +396,10 @@ public final class EdgeResolver implements AutoCloseable {
      */
     private void resolveTypeRefsInto(FileSlice slice, int fid, ParsedUnit unit, String simpleName) {
         slice.typeRefNames.add(simpleName);
-        for (ResolvedOccurrence o : engine.resolveTypeReferences(unit, simpleName)) {
+        long t0 = System.nanoTime();
+        List<ResolvedOccurrence> occurrences = engine.resolveTypeReferences(unit, simpleName);
+        metrics.timer("resolve.typerefs").record(System.nanoTime() - t0);
+        for (ResolvedOccurrence o : occurrences) {
             metrics.counter("resolve.occurrences").add(1);
             metrics.counter("resolve.typerefs").add(1);
             addOccurrenceEdge(fid, o, slice.structuralEdges);

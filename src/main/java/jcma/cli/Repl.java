@@ -4,6 +4,7 @@ import jcma.engine.Position;
 import jcma.index.MonikerEdge;
 import jcma.index.Symbol;
 import jcma.obs.Metrics;
+import jcma.obs.MetricsReport;
 import jcma.query.QueryService;
 import jcma.resolve.Definition;
 import jcma.resolve.Ref;
@@ -42,10 +43,16 @@ final class Repl {
     private Repl() {}
 
     static int run(Path cwd, String[] args, PrintStream out, PrintStream err) {
-        if (args.length != 1) {
-            err.println("jcma: usage: jcma repl");
+        // Optional `--metrics`: record across the whole warm session and dump the cumulative timer
+        // split on exit. In a warm session resolve.tier1 fires once per file ever touched (= unique
+        // files), while resolve.parse fires per (file, name) — so (parse.count − tier1.count) is the
+        // redundant re-parse the semantic parse cache would eliminate (its realized session win).
+        boolean recordMetrics = args.length == 2 && args[1].equals("--metrics");
+        if (!(args.length == 1 || recordMetrics)) {
+            err.println("jcma: usage: jcma repl [--metrics]");
             return 2;
         }
+        Metrics metrics = recordMetrics ? Metrics.create() : Metrics.noop();
         Path repo = Workspace.projectRoot(cwd);
         Path indexDir = IndexLayout.defaultIndexDir(repo);
         if (!Files.isDirectory(indexDir)) {
@@ -54,7 +61,7 @@ final class Repl {
         }
         Workspace workspace = Workspace.discover(repo);
         FreshnessSource source = new TreeScanSource(workspace.sourceRoots());
-        try (QuerySessions.Held held = QuerySessions.open(indexDir, workspace, source, Metrics.noop(), err);
+        try (QuerySessions.Held held = QuerySessions.open(indexDir, workspace, source, metrics, err);
                 Terminal terminal = TerminalBuilder.terminal()) {
             QueryService svc = held.service();
             out.println("jcma repl — commands: refs <symbol> | def <symbol> | def <file> <line:col> "
@@ -83,6 +90,10 @@ final class Repl {
                         }
                     }
                 }
+            }
+            if (recordMetrics) {
+                err.println();
+                err.println(MetricsReport.format(metrics));
             }
             return 0;
         } catch (Exception e) {

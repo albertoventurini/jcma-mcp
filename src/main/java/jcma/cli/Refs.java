@@ -2,6 +2,7 @@ package jcma.cli;
 
 import jcma.index.Symbol;
 import jcma.obs.Metrics;
+import jcma.obs.MetricsReport;
 import jcma.query.QueryService;
 import jcma.query.QueryTimeoutException;
 import jcma.resolve.Ref;
@@ -30,6 +31,20 @@ final class Refs {
     private Refs() {}
 
     static int run(Path cwd, String[] args, PrintStream out, PrintStream err) {
+        // Opt-in perf instrumentation: `--metrics` records the resolve.parse / resolve.values /
+        // resolve.typerefs timer split and dumps it to stderr after the query. Stripped before the rest
+        // of arg parsing so the positional check is unaffected.
+        boolean recordMetrics = false;
+        List<String> filtered = new java.util.ArrayList<>();
+        for (String arg : args) {
+            if (arg.equals("--metrics")) {
+                recordMetrics = true;
+            } else {
+                filtered.add(arg);
+            }
+        }
+        args = filtered.toArray(new String[0]);
+        Metrics metrics = recordMetrics ? Metrics.create() : Metrics.noop();
         Deadline.Parsed parsed = Deadline.parse(args);
         if (parsed.error() != null) {
             err.println("jcma: " + parsed.error());
@@ -49,7 +64,7 @@ final class Refs {
             return 1;
         }
         try (QuerySessions.Held held = QuerySessions.open(
-                indexDir, Workspace.discover(repo), FreshnessSource.none(), Metrics.noop(), err)) {
+                indexDir, Workspace.discover(repo), FreshnessSource.none(), metrics, err)) {
             QueryService svc = held.service();
             List<Symbol> targets = svc.resolveTargets(symbol, deadline);
             if (targets.isEmpty()) {
@@ -67,6 +82,10 @@ final class Refs {
             // — e.g. a type and its constructor. Print it once for the query, not once per declaration.
             if (shared != null && shared.hasUnconfirmedTail()) {
                 printUnconfirmed(out, shared);
+            }
+            if (recordMetrics) {
+                err.println();
+                err.println(MetricsReport.format(metrics));
             }
             return 0;
         } catch (QueryTimeoutException te) {
