@@ -438,16 +438,18 @@ public final class EdgeResolver implements AutoCloseable {
 
     /**
      * Resolve the <b>structural layer</b> of {@code target}'s own file (its outgoing hierarchy) and of
-     * every candidate file for {@code target.name()} (the incoming hierarchy: a subtype names its
-     * supertype, so it is a candidate). Hierarchy is name-independent, so this resolves <em>only</em>
-     * the structural layer — it does not drag in the value-name resolution {@code find_references} needs
+     * the incoming-hierarchy candidate files — the subtypes/overriders. A subtype names its supertype
+     * <em>type</em>, so the candidate files are those naming {@code target}'s <b>anchor type</b> (its
+     * own name for a type, its enclosing type's name for a method), <b>not</b> {@code target.name()}:
+     * an override site declares the method but references the supertype type, never the method name, so
+     * keying on the method name misses every overrider on a cold query. This is exactly the warm the
+     * transitive walker does per step, so the single-hop primitive shares {@link
+     * #warmHierarchyNeighborhood}. Hierarchy is name-independent, so this resolves <em>only</em> the
+     * structural layer — it does not drag in the value-name resolution {@code find_references} needs
      * (and vice-versa).
      */
     private void ensureHierarchyResolved(Symbol target) {
-        warmStructural(target.fileId());
-        for (int fid : candidateFiles(target.name())) {
-            warmStructural(fid);
-        }
+        warmHierarchyNeighborhood(target);
     }
 
     // ------------------------------------------------------------------ transitive hierarchy (task-05)

@@ -11,6 +11,7 @@ import jcma.obs.Metrics;
 import jcma.workspace.Workspace;
 
 import java.nio.file.Path;
+import java.util.HashSet;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -37,6 +38,36 @@ import org.junit.jupiter.api.io.TempDir;
 class HierarchyEdgesTest {
 
     private static final Path HIER = Path.of("src/test/resources/fixtures/resolve/hierarchy");
+    private static final Path REFS_SUPERTYPE = Path.of("src/test/resources/fixtures/resolve/refs-supertype");
+
+    /**
+     * The single-hop {@code find_subtypes} primitive on a <b>method</b>, queried <b>cold</b> (no prior
+     * warm of the supertype's name). The overriders {@code Circle.draw()}/{@code Square.draw()} live in
+     * subtype <em>types</em> and never <em>call</em> {@code draw()}, so they are candidate files for the
+     * enclosing type's name ({@code "Shape"}), not for {@code "draw"}. The primitive must warm by that
+     * <em>anchor</em> type name — otherwise a cold query under-resolves and returns no overriders (the
+     * transitive walker already warms this way; this pins the single-hop primitive to match).
+     */
+    @Test
+    void singleHopSubtypesOfMethodReturnsOverridersCold(@TempDir Path indexDir) throws Exception {
+        index(REFS_SUPERTYPE, indexDir);
+        try (EdgeResolver resolver =
+                EdgeResolver.open(indexDir, Workspace.ofSourceRoot(REFS_SUPERTYPE), Metrics.create())) {
+            Symbol draw = resolver.declarations("draw").stream()
+                    .filter(s -> "app/Shape#draw().".equals(s.moniker()))
+                    .findFirst().orElseThrow(() -> new AssertionError("Shape.draw() not indexed"));
+            Set<String> overriders = new HashSet<>();
+            for (MonikerEdge e : resolver.subtypes(draw)) {
+                if (e.type() == EdgeType.OVERRIDES) {
+                    overriders.add(e.src());
+                }
+            }
+            assertTrue(overriders.contains("app/Circle#draw()."),
+                    "Circle.draw() overrides Shape.draw() — must surface cold, got: " + overriders);
+            assertTrue(overriders.contains("app/Square#draw()."),
+                    "Square.draw() overrides Shape.draw() — must surface cold, got: " + overriders);
+        }
+    }
 
     @Test
     void extendsImplementsOverridesEdgesPersistWithCorrectMonikers(@TempDir Path indexDir) throws Exception {

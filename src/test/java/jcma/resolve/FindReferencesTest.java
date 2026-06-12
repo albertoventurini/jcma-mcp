@@ -115,6 +115,29 @@ class FindReferencesTest {
         }
     }
 
+    /**
+     * Product decision (LSP-consistent, confirmed with the user): {@code find_references} on an
+     * overridden <b>method</b> reports call/use sites only — <b>not</b> its overriders. {@code
+     * Shape.draw()} is never called and is overridden by {@code Circle}/{@code Square}; {@code
+     * find_references} must therefore return zero confirmed refs (and no location-less phantom from the
+     * {@code OVERRIDES} hierarchy edge). Overriders are the job of {@code find_java_subtypes} — the
+     * {@code textDocument/implementation} channel, not {@code textDocument/references}.
+     */
+    @Test
+    void doesNotReportOverridersAsReferencesOnAMethod(@TempDir Path indexDir) throws Exception {
+        index(REFS_SUPERTYPE, indexDir);
+        try (EdgeResolver resolver =
+                EdgeResolver.open(indexDir, Workspace.ofSourceRoot(REFS_SUPERTYPE), Metrics.create())) {
+            Symbol draw = resolver.declarations("draw").stream()
+                    .filter(s -> "app/Shape#draw().".equals(s.moniker()))
+                    .findFirst().orElseThrow(() -> new AssertionError("Shape.draw() not indexed"));
+            References refs = resolver.findReferences(draw);
+
+            assertEquals(0, refs.totalRefs(),
+                    "draw() is never called; overriders are NOT references (overriders → find_java_subtypes)");
+        }
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private static java.util.stream.Stream<Ref> allRefs(References refs) {
