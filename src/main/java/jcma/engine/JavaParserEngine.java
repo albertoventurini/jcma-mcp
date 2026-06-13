@@ -129,46 +129,6 @@ public final class JavaParserEngine implements AnalysisEngine {
     }
 
     /**
-     * Sharing constructor for a {@link #fork()}: reuse the immutable inputs (the once-built {@code
-     * StableSolver}-wrapped JDK + jar dictionaries and the discovered source roots) and build this
-     * fork's <b>own</b> parser/{@code CombinedTypeSolver} via {@link #buildParser()}, so nothing mutable
-     * is shared with the origin engine. The jar/JDK indexes are not rebuilt — only the per-fork
-     * parser/type-solver/facade caches start empty (the per-shard variant: K× source-AST memory, zero
-     * cross-thread cache mutation).
-     */
-    private JavaParserEngine(TypeSolver jdkSolver, List<TypeSolver> jarSolvers, List<Path> sourceRoots) {
-        this.jdkSolver = jdkSolver;
-        this.jarSolvers = jarSolvers;
-        this.sourceRoots = sourceRoots;
-        this.parser = buildParser();
-    }
-
-    /**
-     * A thread-independent fork sharing only this engine's immutable jar/JDK dictionaries and source
-     * roots; its parser/solver/facade caches are private and start empty. Discardable after one query.
-     */
-    public JavaParserEngine fork() {
-        return new JavaParserEngine(jdkSolver, jarSolvers, sourceRoots);
-    }
-
-    @Override
-    public Optional<AnalysisEngine> tryFork() {
-        return Optional.of(fork());
-    }
-
-    /**
-     * Populate the static {@link JavaParserFacade} registry's entry for this engine's type-solver
-     * <b>single-threaded</b>, before any parallel fan-out. {@code JavaParserFacade.get(typeSolver)} keys
-     * a static, unsynchronized {@code WeakHashMap} by the solver instance; doing every distinct-key
-     * insert serially (one {@code seedFacade} per forked engine on the consumer thread) means the
-     * parallel region only does keyed reads, not structural map mutation — the documented mitigation for
-     * the one silent-wrong hazard the safe-degrade net misses.
-     */
-    public void seedFacade() {
-        JavaParserFacade.get(typeSolver);
-    }
-
-    /**
      * Build a parser over a <b>fresh</b> {@code CombinedTypeSolver} = JDK + source roots + jars (the M0
      * spike order). A fresh combined solver is what sheds the stale view on {@link #refresh()}: it has
      * its own type cache (and a new {@code JavaParserFacade} keyed by it), and its source
