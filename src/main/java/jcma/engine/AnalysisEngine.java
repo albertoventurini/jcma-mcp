@@ -74,4 +74,17 @@ public interface AnalysisEngine {
     default void refresh() {
         // no cached state by default
     }
+
+    /**
+     * Try to produce a <b>thread-independent</b> fork of this engine for parallel resolution (Direction
+     * A). A fork shares only this engine's immutable inputs (the jar/JDK reference dictionaries) and owns
+     * its own mutable resolution state (parser, type-solver caches, facade), so K forks can each {@code
+     * parse}/{@code resolveOccurrences}/{@code resolveTypeReferences} concurrently with no shared-state
+     * race. The default is {@link Optional#empty()} — an engine that cannot safely fork (the future
+     * javac-hybrid) stays serial; {@link JavaParserEngine} overrides it. The returned engine is intended
+     * to be per-query and discarded after; callers must not share one across threads themselves.
+     */
+    default Optional<AnalysisEngine> tryFork() {
+        return Optional.empty();
+    }
 }

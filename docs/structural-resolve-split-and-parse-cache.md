@@ -2,7 +2,8 @@
 
 > **Status: B0+B1 DONE (2026-06-12, commit `b028fb6` on `main`); parse/resolve split now MEASURED
 > (2026-06-12, see "Measured" section below) — the data reorders the next levers (Tier-1 re-parse
-> elimination first; parse cache + parallel resolve after).** This is the record of the structural-layer split, its
+> elimination first; parse cache + parallel resolve after). Direction A (gated parallel resolve)
+> SHIPPED 2026-06-13 — see "Direction A — shipped" at the end.** This is the record of the structural-layer split, its
 > measured (modest) cold-`find_references` win on Spring, *why* it's modest, and the design for the
 > parse cache that the residual cost points to. Companion to
 > [`find-references-cold-resolution-perf.md`](find-references-cold-resolution-perf.md), which calls
@@ -245,3 +246,76 @@ cache already collapses Tier-1 across queries). So:
 > already flips `getBean` to 4073 confirmed / 498 tail; single-module repos (commons-lang) were always
 > fine because their root `src/main/java` exists. Hermetic by design — no build tool runs at index time;
 > deriving roots from the evaluated Gradle/Maven model stays a possible future *query-time-only* layer.
+
+## Direction A — shipped (2026-06-13): gated parallel resolve for `find_references`
+
+Lever 3 (parallel resolve) shipped as a **gated** serial/parallel split: `find_references` resolves
+serially below a candidate-file threshold and fans out across K forked engines above it. The
+**conservative per-shard variant** (PRD doc "Start conservative") — each fork owns its own
+`CombinedTypeSolver`/parser/`JavaParserFacade`, sharing only the immutable `StableSolver`-wrapped
+jar/JDK dictionaries — so there is **zero cross-thread cache mutation** in the parallel region.
+
+**Shape (as designed).** Producer/consumer: K platform-thread producers each run engine-bound work
+(`parse` + name-scoped `resolveOccurrences`/`resolveTypeReferences`) off a shared work queue; the
+single query-worker thread is the consumer and applies each result (`sliceFor` + `addOccurrenceEdge`
++ `store.applyEdit`) — single-writer store and cancel-at-file-boundary both preserved. `warmForReferences`
+was split into `produceResolution` (engine-bound, no `EdgeResolver`/store touch) + `applyResolution`
+(state/store), so serial and parallel run the **identical** per-file logic — equivalence by construction.
+Static-facade race mitigation: each fork's `JavaParserFacade` key is **seeded single-threaded**
+(`JavaParserEngine.seedFacade()`) on the consumer thread before fan-out, so the parallel region only
+does keyed reads. Seam: `AnalysisEngine.tryFork()` (default empty → engine that can't fork stays serial).
+
+**Facade-race verdict (the gating correctness risk): no race observed.** The `parallelResolveStress`
+unit test runs the forced-parallel query 30× at K=8 (oversubscribed) on a fresh resolver each time and
+asserts set-identical confirmed groups + unconfirmed tail every iteration; `parallelMatchesSerial`
+asserts forced-serial == forced-parallel. Both green. End-to-end, **every** sweep run below returned the
+**same confirmed count** as serial (e.g. getBean 4078 on both paths) — the silent-wrong mode the
+safe-degrade net misses did not materialise with the seed-then-read mitigation. (Still "99%, not 100%"
+per the library guidance; the stress test is the standing guard.)
+
+**Realized speedup is NOT K× — the per-shard cold cache eats most of it.** This is the headline finding,
+and it *contradicts* the lever-3 prediction ("wall ≈ K× on the resolve.values mass"). Because each fork
+has its own cold source-AST cache, every shard independently **re-parses the shared dependency closure**
+that resolution chases into (the *implicit* parse of "Two parses hide in one query"). Serial parses that
+closure once and reuses it; K shards parse it K times. Measured per-file `resolve.values` on getBean:
+**89ms serial → 612ms at K=8** (~7× inflation), so 8× threads net only ~16%.
+
+**K sweep (Spring `getBean`, 549 candidate files, JVM `installDist`, isolated cold index per run):**
+
+| K | 1 (serial) | 2 | 4 | 6 | 8 | 14 |
+|---|---|---|---|---|---|---|
+| wall | 54.6s | 45.1s | **40.9s** | 47.1s | 49.0s | 74.0s |
+
+K=4 is the optimum and it **regresses past it** — more shards = colder caches = more redundant
+re-parsing overwhelming the added parallelism. So the default K cap is **4**, not `min(cpus, 8)`
+(`JCMA_RESOLVE_THREADS` overrides). Confirmed = 4078 at every K.
+
+**Crossover curve (serial vs K=4, wall in s; `files` = `resolve.files` candidate count):**
+
+| files | 1 | 6 | 19 | 47 | 63 | 83 | 137 | 301 | 549 |
+|---|---|---|---|---|---|---|---|---|---|
+| serial | 4.5 | 6.6 | 9.8 | 12.6 | 15.2 | 14.6 | 11.9 | 30.8 | 54.6 |
+| K=4 | 4.6 | 7.1 | 10.6 | 11.8 | 15.2 | 13.2 | 11.5 | 30.0 | 40.9 |
+| verdict | lose | lose | lose | win | tie | win | win | win | **win 25%** |
+
+Below ~33 files parallel reliably **loses** (fork + seed + cold-cache overhead, ~0.1–0.8s); from ~47 up
+it never regresses wall, with the decisive payoff at 549. **Chosen `PARALLEL_THRESHOLD = 40**` (just above
+the crossover; `JCMA_RESOLVE_PARALLEL_THRESHOLD` overrides). Default-config e2e confirms the gate routes
+correctly: getBean (549) → `resolve.parallel=1`, 42.7s, 4078 confirmed; resolveBeanClass (6) →
+`resolve.serial=1`, 6.0s. The mid-range (47–300) wins are small (≤1.4s, near noise) — parallel pays K×
+transient source-AST memory there for little, but never regresses wall; the deadline-relevant win is
+concentrated at the large queries the threshold is really for.
+
+**Honest bottom line.** The conservative variant ships correct and gives a real but modest first-query
+win (getBean −25%, still 42.7s > 30s deadline). The redundant implicit-parse recompute is now the
+dominant cost ceiling, not thread count — so the **next lever is the shared bounded concurrent `Cache`**
+(JavaParser PR #3343 seam: one shared source-CU cache across shards instead of K× cold copies), which
+attacks exactly this recompute. That is the lever that could turn the ~16–25% into something closer to K×.
+
+**Future levers (named, not built):**
+- **Shared bounded concurrent `Cache` across shards** (PR #3343) — defuses both the K× memory *and* the
+  K× implicit-parse recompute identified above; the standout follow-up. Needs a *custom* concurrent impl
+  (stock `InMemoryCache` is a bare `WeakHashMap`).
+- **Pooled/reused forked engines across queries** — per-query fork shipped first; cross-query warmth would
+  amortise fork + facade-seed and keep shard caches warm between queries.
+- **Parallelise the hierarchy / `find_definition` paths** — this change is scoped to `find_references`.

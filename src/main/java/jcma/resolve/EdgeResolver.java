@@ -89,6 +89,14 @@ public final class EdgeResolver implements AutoCloseable {
     private final Map<Integer, Set<String>> overlayNamesByFile = new HashMap<>();
     private final StructuralParser overlayParser = new StructuralParser();
 
+    // Direction A (gated parallel resolve). A find_references query whose candidate-file count reaches
+    // parallelThreshold fans the per-file engine-bound work (parse + name-scoped resolve) across
+    // resolveThreads forked engines; below it, the existing serial path runs (paying no fork/seed/cold-
+    // cache overhead on the common small query). Both thresholds are env-overridable (observability/
+    // swappable-seam culture) and have package-private test seams. The store write stays single-writer.
+    private int parallelThreshold = defaultParallelThreshold();
+    private int resolveThreads = defaultResolveThreads();
+
     /**
      * Per-file Tier-2 accumulation. The cache unit is {@code (file, name)} for <em>both</em> the value
      * layer and the type-ref layer (B1), and {@code file} for the name-independent hierarchy layer.
@@ -176,6 +184,62 @@ public final class EdgeResolver implements AutoCloseable {
         return out;
     }
 
+    // ------------------------------------------------------------------ Direction A config (parallel resolve)
+
+    /** The metrics registry this resolver records into (test seam + observability). */
+    Metrics metrics() {
+        return metrics;
+    }
+
+    /** Test seam: force the serial/parallel gate (∞ → always serial, 0 → always parallel). */
+    void setParallelThreshold(int threshold) {
+        this.parallelThreshold = threshold;
+    }
+
+    /** Test seam: the number of forked engines (K) the parallel path fans out across. */
+    void setResolveThreads(int threads) {
+        this.resolveThreads = threads;
+    }
+
+    /**
+     * Candidate-file count at/above which {@code find_references} resolves in parallel. Set just above
+     * the measured serial-vs-parallel crossover on Spring (docs/structural-resolve-split-and-parse-
+     * cache.md): below ~33 files parallel reliably loses to the fork/seed/cold-cache overhead (e.g.
+     * {@code createBean}, 19 files, +0.8s); from ~47 up it never regresses wall and the payoff grows to
+     * 25% at {@code getBean} (549 files, 54.6s→40.9s). Env {@code JCMA_RESOLVE_PARALLEL_THRESHOLD}
+     * overrides (the force-serial/force-parallel knob for the sweep).
+     */
+    private static int defaultParallelThreshold() {
+        int env = envInt("JCMA_RESOLVE_PARALLEL_THRESHOLD", -1);
+        return env >= 0 ? env : 40;
+    }
+
+    /**
+     * K — the number of forked engines for a parallel query. Platform threads, CPU-bound. Capped at
+     * <b>4</b>, not the core count: the conservative per-shard variant gives each fork its own cold
+     * source-AST cache, so every shard independently re-parses the shared dependency closure that
+     * resolution chases into. The measured Spring {@code getBean} sweep (docs/structural-resolve-split-
+     * and-parse-cache.md) peaks at K=4 (54.6s→40.9s) and <em>regresses</em> past it (K=8: 49s, K=14: 74s)
+     * as that redundant recompute overwhelms the added parallelism. Env {@code JCMA_RESOLVE_THREADS}
+     * overrides (e.g. {@code =1} to force the serial-equivalent single producer for the sweep).
+     */
+    private static int defaultResolveThreads() {
+        int env = envInt("JCMA_RESOLVE_THREADS", -1);
+        return env >= 1 ? env : Math.min(Runtime.getRuntime().availableProcessors(), 4);
+    }
+
+    private static int envInt(String name, int fallback) {
+        String v = System.getenv(name);
+        if (v != null) {
+            try {
+                return Integer.parseInt(v.trim());
+            } catch (NumberFormatException ignore) {
+                // fall through to the default
+            }
+        }
+        return fallback;
+    }
+
     // ------------------------------------------------------------------ find_references
 
     /** {@code find_references(target)}: confirmed refs grouped by enclosing symbol + unconfirmed tail. */
@@ -240,14 +304,149 @@ public final class EdgeResolver implements AutoCloseable {
      * complete for {@code simpleName}.
      */
     private void ensureResolved(String simpleName) {
+        // Single-threaded prelude: read the slices to decide which candidate files still need work. The
+        // candidate count is both the cost driver and the parallelism unit, so it gates the path below.
+        List<ResolveTask> tasks = new ArrayList<>();
         for (int fid : candidateFiles(simpleName)) {
+            Path path = absPathOf(fid);
+            if (path == null || !Files.isRegularFile(path)) {
+                continue;
+            }
+            FileSlice slice = sliceFor(fid);
+            boolean needValue = !slice.names.contains(simpleName);
+            boolean needTypeRefs = !slice.typeRefNames.contains(simpleName);
+            if (!needValue && !needTypeRefs) {
+                continue; // (file, name) value + type-ref layers both cached
+            }
+            tasks.add(new ResolveTask(fid, path, needValue, needTypeRefs));
+        }
+        if (tasks.isEmpty()) {
+            return; // fully cached — neither path; the second same-name query re-resolves nothing
+        }
+
+        // Gate: serial below the threshold (or when the engine can't fork), parallel above it.
+        List<AnalysisEngine> forks = tasks.size() >= parallelThreshold
+                ? forkEngines(Math.min(resolveThreads, tasks.size()))
+                : List.of();
+        if (forks.isEmpty()) {
+            metrics.counter("resolve.serial").add(1);
+            resolveSerial(tasks, simpleName);
+        } else {
+            metrics.counter("resolve.parallel").add(1);
+            metrics.counter("resolve.parallel.tasks").add(tasks.size());
+            ParallelResolve.run(forks, tasks,
+                    (engine, t) -> produceResolution(engine, t, simpleName),
+                    (t, r) -> applyResolution(t, r, simpleName));
+        }
+    }
+
+    /** A candidate file to resolve for one name, and which per-(file,name) layers it still needs. */
+    private record ResolveTask(int fid, Path path, boolean needValue, boolean needTypeRefs) {}
+
+    /** The engine-bound product of one task: the occurrences to turn into edges (no store/slice touch). */
+    private record Resolved(List<ResolvedOccurrence> typeRefOccs, List<ResolvedOccurrence> valueOccs) {}
+
+    /** The serial path (current behaviour): resolve each file in turn on this thread, cancel between files. */
+    private void resolveSerial(List<ResolveTask> tasks, String simpleName) {
+        for (ResolveTask t : tasks) {
             // Cooperative cancel checkpoint (task-12): the time-box interrupts this (single) worker
             // thread; bail here — between files, never mid-applyEdit, so the store is never torn.
             if (Thread.currentThread().isInterrupted()) {
                 throw new java.util.concurrent.CancellationException("find_references cancelled");
             }
-            warmForReferences(fid, simpleName);
+            Resolved r;
+            try {
+                r = produceResolution(this.engine, t, simpleName);
+            } catch (IOException skip) {
+                continue; // parse failure: leave whatever is cached (it cannot resolve), surface nothing
+            }
+            applyResolution(t, r, simpleName);
         }
+    }
+
+    /**
+     * Fork {@code k} thread-independent engines and seed each one's static {@link
+     * com.github.javaparser.symbolsolver.javaparsermodel.JavaParserFacade} key single-threaded (the
+     * documented race mitigation) before any fan-out. Returns an empty list if the engine cannot fork —
+     * the caller then degrades to serial (an engine with no safe fork stays single-threaded).
+     */
+    private List<AnalysisEngine> forkEngines(int k) {
+        List<AnalysisEngine> forks = new ArrayList<>(k);
+        for (int i = 0; i < k; i++) {
+            Optional<AnalysisEngine> fork = engine.tryFork();
+            if (fork.isEmpty()) {
+                return List.of(); // not forkable → serial
+            }
+            AnalysisEngine fe = fork.get();
+            if (fe instanceof JavaParserEngine jpe) {
+                jpe.seedFacade(); // seed the static facade key on this (consumer) thread, pre-fan-out
+            }
+            forks.add(fe);
+        }
+        return forks;
+    }
+
+    /**
+     * Engine-bound resolution for one task — the half that {@link ParallelResolve} runs on a producer
+     * thread. Parses {@code t}'s file and resolves the queried name's type-ref and/or value layers (only
+     * the ones still needed), timing each leg. <b>Touches no {@code EdgeResolver} state and no store</b>,
+     * so it is safe to run concurrently across forked engines; the returned {@link Resolved} is applied
+     * single-threaded by {@link #applyResolution}.
+     */
+    private Resolved produceResolution(AnalysisEngine forkEngine, ResolveTask t, String simpleName)
+            throws IOException {
+        long t0 = System.nanoTime();
+        ParsedUnit unit = forkEngine.parse(t.path());
+        metrics.timer("resolve.parse").record(System.nanoTime() - t0);
+        List<ResolvedOccurrence> typeRefOccs = List.of();
+        if (t.needTypeRefs()) {
+            long tt = System.nanoTime();
+            typeRefOccs = forkEngine.resolveTypeReferences(unit, simpleName);
+            metrics.timer("resolve.typerefs").record(System.nanoTime() - tt);
+        }
+        List<ResolvedOccurrence> valueOccs = List.of();
+        if (t.needValue()) {
+            long tv = System.nanoTime();
+            valueOccs = forkEngine.resolveOccurrences(unit, simpleName);
+            metrics.timer("resolve.values").record(System.nanoTime() - tv);
+        }
+        return new Resolved(typeRefOccs, valueOccs);
+    }
+
+    /**
+     * Apply one produced resolution into the graph — the {@code EdgeResolver}-state half, run only on the
+     * single consumer (query-worker) thread: mark the file's {@code (file, name)} layers resolved, append
+     * the occurrence edges into its slice, and re-apply the slice's union to the single-writer store. The
+     * per-occurrence counters fire here (the engine-bound timers fired in {@link #produceResolution}).
+     */
+    private void applyResolution(ResolveTask t, Resolved r, String simpleName) {
+        FileSlice slice = sliceFor(t.fid());
+        if (t.needTypeRefs()) {
+            slice.typeRefNames.add(simpleName);
+            for (ResolvedOccurrence o : r.typeRefOccs()) {
+                metrics.counter("resolve.occurrences").add(1);
+                metrics.counter("resolve.typerefs").add(1);
+                addOccurrenceEdge(t.fid(), o, slice.structuralEdges);
+            }
+        }
+        if (t.needValue()) {
+            slice.names.add(simpleName);
+            for (ResolvedOccurrence o : r.valueOccs()) {
+                metrics.counter("resolve.occurrences").add(1);
+                metrics.counter("resolve.values").add(1);
+                addOccurrenceEdge(t.fid(), o, slice.valueEdges);
+            }
+        }
+        // The serial, single-writer leg — neither the parse cache nor parallel resolve reclaims it.
+        // A store-write failure is a genuine error (not an unparseable-file skip): surface it.
+        long ta = System.nanoTime();
+        try {
+            store.applyEdit(slice.toIndex(t.fid()));
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+        metrics.timer("resolve.apply").record(System.nanoTime() - ta);
+        metrics.counter("resolve.files").add(1);
     }
 
     /**
@@ -305,49 +504,6 @@ public final class EdgeResolver implements AutoCloseable {
             metrics.counter("overlay.registered").add(1);
         } catch (IOException unparseable) {
             metrics.counter("overlay.dropped").add(1); // left cleared — cannot derive usages
-        }
-    }
-
-    /**
-     * Warm {@code fid} for a {@code find_references(simpleName)} query: resolve the value layer and the
-     * type-ref layer for {@code simpleName} (each at most once per {@code (file, name)}), accumulating
-     * into the file's slice and re-applying the union. Both layers share one {@code engine.parse} when
-     * both are needed. The hierarchy layer is never touched here (B0 — {@code find_references} does not
-     * read it).
-     */
-    private void warmForReferences(int fid, String simpleName) {
-        Path path = absPathOf(fid);
-        if (path == null || !Files.isRegularFile(path)) {
-            return;
-        }
-        try {
-            FileSlice slice = sliceFor(fid);
-            boolean needValue = !slice.names.contains(simpleName);
-            boolean needTypeRefs = !slice.typeRefNames.contains(simpleName);
-            if (!needValue && !needTypeRefs) {
-                return; // (file, name) value + type-ref layers both cached
-            }
-            // Perf split (the parse-cache-vs-parallelism decision): time the *explicit* parse of this
-            // candidate file separately from resolution. NB the *implicit* parse (the source TypeSolver
-            // re-parsing other files that .resolve() chases into) is folded into resolve.values/typerefs,
-            // not here — so resolve.parse is a lower bound on what an AST cache could reclaim.
-            long t0 = System.nanoTime();
-            ParsedUnit unit = engine.parse(path);
-            metrics.timer("resolve.parse").record(System.nanoTime() - t0);
-            if (needTypeRefs) {
-                resolveTypeRefsInto(slice, fid, unit, simpleName);
-            }
-            if (needValue) {
-                resolveValueInto(slice, fid, unit, simpleName);
-            }
-            // Perf split: the store write is the serial, single-writer leg — neither the parse cache
-            // nor parallel resolve reclaims it, so isolating it bounds what those two levers can win.
-            long ta = System.nanoTime();
-            store.applyEdit(slice.toIndex(fid));
-            metrics.timer("resolve.apply").record(System.nanoTime() - ta);
-            metrics.counter("resolve.files").add(1);
-        } catch (IOException skip) {
-            // parse failure: leave whatever is cached (it cannot resolve), surface nothing
         }
     }
 
