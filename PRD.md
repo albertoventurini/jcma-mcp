@@ -4,7 +4,7 @@
 > Not an editor LSP. Its job is to let an AI agent (Claude Code first) navigate a Java
 > codebase semantically, with the lowest possible memory footprint and instant startup.
 
-*(Working name; the repo dir is `java-lsp`, but the product is deliberately **not** an LSP — see §11 Naming.)*
+*(`jcma` = "Java Code-Map for Agents" — the adopted name and repo dir. Deliberately **not** an LSP; see §3 non-goals.)*
 
 ---
 
@@ -433,20 +433,27 @@ calibrates them and decides go / fall-back.**
 
 ---
 
-## 9. Proposed initial project structure (no code exists yet)
+## 9. Project structure (as built)
 
 ```
-java-lsp/                      (consider renaming, e.g. jcma/)
-├─ build.gradle(.kts)|pom.xml  build + GraalVM native-image plugin
-├─ src/main/java/.../
-│   ├─ engine/                 AnalysisEngine interface + JavaParser impl
-│   ├─ workspace/              source-root discovery, classpath (Maven/manual)
-│   ├─ index/                  §5.1 mmap store: columns, CSR graph, trigram, LSM overlay, fingerprints
-│   ├─ mcp/                    minimal MCP/JSON-RPC stdio server
+jcma/
+├─ build.gradle.kts            Gradle build + GraalVM native-image plugin
+├─ build-native-image.sh       native-image build wrapper
+├─ src/main/java/jcma/
+│   ├─ engine/                 AnalysisEngine interface + JavaParser impl, structural parser
+│   ├─ workspace/              source-root + classpath discovery, FS-driven freshness, reconciler
+│   ├─ index/                  §5.1 mmap store: columns, CSR graph, name/text indexes, LSM overlay
+│   ├─ jdkindex/               host-JDK signature index (native-safe JDK resolution)
+│   ├─ resolve/                Tier-2 lazy-resolve-and-cache: edges, hierarchy, node-diff cascade
+│   ├─ session/                live per-repo state (refresh → cascade → serve)
+│   ├─ query/                  cancellable, time-boxed query serving + target selection
+│   ├─ mcp/                    MCP/JSON-RPC stdio server (+ mcp/json, dependency-free JSON)
 │   ├─ tools/                  the §6 tool handlers
-│   └─ response/               agent-response shaping (snippets, grouping, budgeting)
+│   ├─ response/               agent-response shaping (snippets, grouping, budgeting)
+│   ├─ obs/                    lightweight native-friendly metrics (counters, timers, call log)
+│   └─ cli/                    `jcma` CLI dispatch (serve, repl, index, refs, def, …)
 ├─ src/main/resources/META-INF/native-image/   reflection/reachability config
-└─ bench/                      benchmark + navigation-correctness corpus harness
+└─ milestones/m0-spike/        retained de-risking harness + corpus oracles (reference)
 ```
 
 ---
@@ -468,7 +475,7 @@ java-lsp/                      (consider renaming, e.g. jcma/)
 ---
 
 ## 11. Open questions
-- **Naming:** the product is not an LSP — adopt a name reflecting "agent-native Java code map"?
+- **Naming:** ~~adopt a name reflecting "agent-native Java code map"?~~ **Resolved — `jcma` (Java Code-Map for Agents).**
 - **Build tool for the project itself:** Gradle vs Maven (Gradle has the more mature
   native-image plugin story).
 - **Index persistence format:** *decided* — custom memory-mapped store (§5.1). **Overlay/compaction
