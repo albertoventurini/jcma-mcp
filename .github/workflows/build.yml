@@ -1,0 +1,43 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: jcma-linux
+          - os: macos-latest
+            artifact: jcma-macos
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # GraalVM 25 ships native-image; setup-graalvm also wires up the C toolchain it needs
+      # (build-essential on Linux, Xcode CLT on macOS are already present on the runners).
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: 'graalvm-community'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: 'gradle'
+
+      - name: Build native image
+        run: ./gradlew nativeCompile --no-daemon
+
+      # Exercise the binary itself: cross-jar (JarTypeSolver), JDK-target, and the JDK-gap
+      # regression guard all resolve through the freshly built native image.
+      - name: Native smoke tests
+        run: ./gradlew crossJarSmoke jdkResolveSmoke nativeJdkGapSmoke --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: build/native/nativeCompile/jcma
