@@ -4,9 +4,9 @@ An agent-native Java (JDK 25+) code-intelligence engine. Its only consumer is an
 agent** (Claude Code first), exposed over **MCP** — no LSP, no editor surface. It does fast,
 low-memory, *semantic* navigation of a codebase and returns context-rich, token-bounded answers.
 
-Built on **JavaParser + JavaSymbolSolver**, compiled to a **GraalVM native image**: a single
-binary that starts in ~14 ms and serves from tens of MB of RSS, over a memory-mapped index whose
-footprint scales with what you query, not the size of the repo.
+Built on **JavaParser + JavaSymbolSolver**, compiled to a **GraalVM native image**: a single,
+lightweight binary that starts fast and serves over a memory-mapped index whose footprint scales
+with what you query, not the size of the repo.
 
 ## MCP tools
 - **`search_java_symbols`** — find a declaration by partial name
