@@ -1,12 +1,20 @@
 # jcma — Java Code-Map for Agents
 
-An agent-native Java (JDK 25+) code-intelligence engine. Its only consumer is an **AI coding
-agent** (Claude Code first), exposed over **MCP** — no LSP, no editor surface. It does fast,
-low-memory, *semantic* navigation of a codebase and returns context-rich, token-bounded answers.
+jcma is a Java (JDK 25+) code-intelligence engine built primarily for AI
+coding agents.
 
-Built on **JavaParser + JavaSymbolSolver**, compiled to a **GraalVM native image**: a single,
-lightweight binary that starts fast and serves over a memory-mapped index whose footprint scales
-with what you query, not the size of the repo.
+It exposes semantic navigation of a Java codebase as a set of MCP tools.
+The main design principles are:
+
+- fast to start: GraalVM native image, no JVM warm-up
+- fast to answer: index read straight from mmap via FFM, no deserialization; lazy resolve-and-cache; incremental LSM updates
+- gentle on memory: aims to beat the standard Java LSP server, `jdt-ls`
+- precise: full type resolution, no heuristics à la Tree-sitter
+- token-conservative
+
+Under the hood it's **JavaParser + JavaSymbolSolver**, compiled to a **GraalVM native
+image** — one lightweight binary that starts instantly and serves from a memory-mapped index
+whose footprint scales with what the agent asks, not with how big the repo is.
 
 ## MCP tools
 - **`search_java_symbols`** — find a declaration by partial name
