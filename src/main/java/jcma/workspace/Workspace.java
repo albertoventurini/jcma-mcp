@@ -26,14 +26,14 @@ import java.util.regex.Pattern;
  * <p><b>Source roots</b> come from the Maven {@code pom.xml} {@code <sourceDirectory>}, defaulting
  * to the standard layout {@code src/main/java}.
  *
- * <p><b>Classpath</b> has three plumbed paths (precedence order): (1) a manual {@code cp.txt} beside
- * the project root, {@link java.io.File#pathSeparator}-split, {@code .jar} entries only (the
- * {@code SolverSetup} read loop); (2) auto-detect from the build tool — {@code mvn
- * dependency:build-classpath} for Maven, or a Gradle {@code --init-script} that prints
- * {@code testRuntimeClasspath} — each writing {@code cp.txt} then re-reading it; (3) the source dirs
- * themselves — which {@code JavaParserTypeSolver} already covers, so no jars are needed for
- * source→source resolution. Automated tests use a committed {@code cp.txt}; the live {@code mvn} /
- * {@code gradle} subprocess paths are exercised only by the manual CLI check.
+ * <p><b>Classpath</b> is auto-detected from the build tool — {@code mvn dependency:build-classpath}
+ * for Maven, or a Gradle {@code --init-script} that prints {@code testRuntimeClasspath} — each writing
+ * a private temp file (never the repo tree) that we re-read into a {@link java.io.File#pathSeparator}-
+ * split {@code .jar} list. Any failure degrades to an empty classpath; the source dirs themselves are
+ * already covered by {@code JavaParserTypeSolver}, so no jars are needed for source→source resolution.
+ * Because that subprocess is slow (cold daemon), {@code jcma index} resolves it <em>once</em> and
+ * persists the result to {@link IndexLayout#classpathCache the index dir}; later sessions open via
+ * {@link #discover(Path, Path)} and read that cache instead of re-spawning the build tool (M2 task-09).
  *
  * <p>A <b>project root</b> is a dir carrying a Maven {@code pom.xml} or any Gradle build marker
  * ({@code build.gradle[.kts]} / {@code settings.gradle[.kts]}); {@link #discover} walks up to it.
@@ -108,12 +108,26 @@ public final class Workspace {
 
     /**
      * Walk up from an arbitrary file to the enclosing project root (Maven {@code pom.xml} or a Gradle
-     * build marker) and build a workspace. The target file's own source root is derived from its
-     * {@code package} declaration (so a bare file resolves even without a build file), unioned with any
-     * build-declared source roots; the classpath comes from the project root (cp.txt, else best-effort
-     * {@code mvn}/{@code gradle}).
+     * build marker) and build a workspace, <b>live-resolving</b> the classpath from the build tool (no
+     * persistence). For ad-hoc / no-index callers (e.g. {@code jcma resolve}); a long-running session
+     * with an index dir should use {@link #discover(Path, Path)} to read the persisted cache instead.
      */
     public static Workspace discover(Path anyFile) {
+        return discover(anyFile, Workspace::resolveClasspath);
+    }
+
+    /**
+     * As {@link #discover(Path)}, but the classpath comes from the {@link IndexLayout#classpathCache
+     * index dir cache} when present (the file {@code jcma index} wrote) — so the session reads a file
+     * instead of spawning a {@code mvn}/{@code gradle} subprocess. On a cache miss it live-resolves and
+     * <b>writes through</b> to the cache, so the next session is fast (M2 task-09).
+     */
+    public static Workspace discover(Path anyFile, Path indexDir) {
+        return discover(anyFile, projectRoot -> classpathFromCache(projectRoot, indexDir));
+    }
+
+    /** Shared discovery body; {@code classpath} maps the resolved project root to its jar list. */
+    private static Workspace discover(Path anyFile, java.util.function.Function<Path, List<Path>> classpath) {
         Path start = anyFile.toAbsolutePath().normalize();
         Path startDir = Files.isDirectory(start) ? start : start.getParent();
 
@@ -141,8 +155,51 @@ public final class Workspace {
         }
 
         Path root = projectRoot != null ? projectRoot : (startDir != null ? startDir : start);
-        List<Path> jars = projectRoot != null ? resolveClasspath(projectRoot) : List.of();
+        List<Path> jars = projectRoot != null ? classpath.apply(projectRoot) : List.of();
         return new Workspace(root, List.copyOf(roots), jars);
+    }
+
+    /**
+     * Resolve {@code projectRoot}'s classpath once and persist it to {@link IndexLayout#classpathCache}
+     * under {@code indexDir} (M2 task-09) — called by {@code jcma index} so a re-index re-resolves and
+     * overwrites, tying classpath freshness to the index lifecycle. Returns the resolved jars (for the
+     * caller's report).
+     */
+    public static List<Path> persistClasspath(Path projectRoot, Path indexDir) {
+        List<Path> jars = resolveClasspath(projectRoot);
+        writeClasspathCache(IndexLayout.classpathCache(indexDir), jars);
+        return jars;
+    }
+
+    /** Cache-aware classpath: read {@code indexDir}'s cache if present, else resolve + write through. */
+    private static List<Path> classpathFromCache(Path projectRoot, Path indexDir) {
+        Path cache = IndexLayout.classpathCache(indexDir);
+        if (Files.isRegularFile(cache)) {
+            return readClasspathJars(cache);
+        }
+        List<Path> jars = resolveClasspath(projectRoot);
+        writeClasspathCache(cache, jars);
+        return jars;
+    }
+
+    /** Write {@code jars} as a {@link File#pathSeparator}-joined line to {@code cache} (best-effort). */
+    private static void writeClasspathCache(Path cache, List<Path> jars) {
+        try {
+            Path parent = cache.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            StringBuilder sb = new StringBuilder();
+            for (Path jar : jars) {
+                if (sb.length() > 0) {
+                    sb.append(File.pathSeparatorChar);
+                }
+                sb.append(jar);
+            }
+            Files.writeString(cache, sb.toString());
+        } catch (IOException ignore) {
+            // best-effort: the resolve already succeeded; a later session just re-resolves on a miss
+        }
     }
 
     /**
@@ -194,7 +251,8 @@ public final class Workspace {
     }
 
     /**
-     * Parse a {@code cp.txt} (pathSeparator-split) into its {@code .jar} entries. Missing/empty file
+     * Parse a classpath file ({@link File#pathSeparator}-split) into its {@code .jar} entries — the
+     * format the index-dir cache ({@link IndexLayout#classpathCache}) is written in. Missing/empty file
      * tolerated → empty list. Non-jar entries (e.g. {@code target/classes} dirs) are dropped.
      */
     public static List<Path> readClasspathJars(Path cpFile) {
@@ -331,37 +389,47 @@ public final class Workspace {
     }
 
     /**
-     * Classpath jars for a project root: prefer a committed {@code cp.txt}; if absent, best-effort
-     * auto-detect from the build tool — {@code mvn dependency:build-classpath} for Maven, or a Gradle
-     * init script for Gradle — each writing {@code cp.txt} then re-reading it. Any failure degrades
-     * to an empty classpath (source→source resolution still works).
+     * Best-effort classpath jars for a project root, auto-detected from the build tool — {@code mvn
+     * dependency:build-classpath} for Maven, or a Gradle init script for Gradle — each writing a
+     * <b>private temp file</b> (never the repo tree) that we re-read, then delete. Any failure degrades
+     * to an empty classpath (source→source resolution still works). Persistence to the index dir is the
+     * caller's concern ({@link #persistClasspath} / {@link #classpathFromCache}), not this method's.
      */
     private static List<Path> resolveClasspath(Path projectRoot) {
-        Path cpFile = projectRoot.resolve("cp.txt");
-        List<Path> jars = readClasspathJars(cpFile);
-        if (!jars.isEmpty() || Files.exists(cpFile)) {
-            return jars; // committed/manual cp.txt wins (even if it is intentionally empty)
+        Path outFile = null;
+        try {
+            outFile = Files.createTempFile("jcma-cp", ".txt");
+            if (Files.exists(projectRoot.resolve("pom.xml"))) {
+                return mavenClasspath(projectRoot, outFile);
+            }
+            if (isGradleRoot(projectRoot)) {
+                return gradleClasspath(projectRoot, outFile);
+            }
+            return List.of();
+        } catch (IOException e) {
+            return List.of(); // could not create the temp out-file → empty classpath
+        } finally {
+            if (outFile != null) {
+                try {
+                    Files.deleteIfExists(outFile);
+                } catch (IOException ignore) {
+                    // temp out-file cleanup is best-effort
+                }
+            }
         }
-        if (Files.exists(projectRoot.resolve("pom.xml"))) {
-            return mavenClasspath(projectRoot, cpFile);
-        }
-        if (isGradleRoot(projectRoot)) {
-            return gradleClasspath(projectRoot, cpFile);
-        }
-        return List.of();
     }
 
-    /** Best-effort {@code mvn dependency:build-classpath} → writes {@code cp.txt}, re-read. */
-    private static List<Path> mavenClasspath(Path projectRoot, Path cpFile) {
+    /** Best-effort {@code mvn dependency:build-classpath} → writes {@code outFile}, re-read. */
+    private static List<Path> mavenClasspath(Path projectRoot, Path outFile) {
         try {
             Process proc = new ProcessBuilder("mvn", "-q",
-                    "dependency:build-classpath", "-Dmdep.outputFile=cp.txt")
+                    "dependency:build-classpath", "-Dmdep.outputFile=" + outFile.toAbsolutePath())
                     .directory(projectRoot.toFile())
                     .redirectErrorStream(true)
                     .start();
             proc.getInputStream().readAllBytes(); // drain so the subprocess can finish
             if (proc.waitFor() == 0) {
-                return readClasspathJars(cpFile);
+                return readClasspathJars(outFile);
             }
         } catch (IOException | InterruptedException e) {
             if (e instanceof InterruptedException) {
@@ -377,11 +445,11 @@ public final class Workspace {
      * {@code --init-script} that registers {@code jcmaPrintClasspath} on the root project — it prints
      * {@code testRuntimeClasspath} (the superset covering both main and test deps; falls back to
      * {@code runtimeClasspath}) as a {@link File#pathSeparator}-joined list. We capture that line,
-     * persist it as {@code cp.txt}, and re-read. The wrapper ({@code gradlew}) is preferred over a
-     * {@code gradle} on {@code PATH}. Any failure (no Gradle, non-Java root, daemon error) degrades
-     * to an empty classpath.
+     * write it to {@code outFile} (a private temp), and re-read. The wrapper ({@code gradlew}) is
+     * preferred over a {@code gradle} on {@code PATH}. Any failure (no Gradle, non-Java root, daemon
+     * error) degrades to an empty classpath.
      */
-    private static List<Path> gradleClasspath(Path projectRoot, Path cpFile) {
+    private static List<Path> gradleClasspath(Path projectRoot, Path outFile) {
         Path initScript = null;
         try {
             initScript = Files.createTempFile("jcma-cp", ".gradle");
@@ -395,8 +463,8 @@ public final class Workspace {
             if (proc.waitFor() == 0) {
                 String cp = lastNonBlankLine(stdout);
                 if (cp != null) {
-                    Files.writeString(cpFile, cp);
-                    return readClasspathJars(cpFile);
+                    Files.writeString(outFile, cp);
+                    return readClasspathJars(outFile);
                 }
             }
         } catch (IOException | InterruptedException e) {

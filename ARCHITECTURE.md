@@ -131,8 +131,11 @@ mmap'd through `java.lang.foreign` (FFM; zero JNI, native-image-native), so warm
 
 ### Workspace & freshness — `jcma.workspace`
 `Workspace` discovers **source roots** (per-module, Maven `pom.xml` or standard layout) and the
-**classpath** (manual `cp.txt`, Maven, or Gradle — `gradle-classpath-discovery`). Multi-module
-source-root discovery is load-bearing: incomplete roots silently starve resolution
+**classpath** (Maven or Gradle — `gradle-classpath-discovery`). The build-tool subprocess (cold
+daemon = seconds) runs once in `jcma index`, which persists the result to
+`<indexDir>/classpath.txt`; later `repl`/`serve`/query sessions read that cache via
+`Workspace.discover(repo, indexDir)` instead of re-spawning it (`classpath-cache-at-index-time`).
+Multi-module source-root discovery is load-bearing: incomplete roots silently starve resolution
 (`getname-getbean-near-zero-confirmed`).
 
 Freshness is **filesystem-driven** — MCP has no client push channel, and the filesystem uniformly

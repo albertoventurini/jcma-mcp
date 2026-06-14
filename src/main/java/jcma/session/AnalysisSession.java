@@ -83,17 +83,23 @@ public final class AnalysisSession implements AutoCloseable {
      */
     public static AnalysisSession open(Path indexDir, Workspace workspace, FreshnessSource source,
             Metrics metrics) throws IOException {
+        long t0 = System.nanoTime();
         LsmStore store = LsmStore.open(indexDir, CompactionPolicy.manual(), metrics);
+        metrics.timer("startup.store_open").record(System.nanoTime() - t0);
         Path usagePath = indexDir.resolve(UsageNameIndexer.FILE_NAME);
         UsageNameIndex usageIndex = Files.exists(usagePath) ? UsageNameIndex.load(usagePath) : null;
         FileTable fileTable = FileTable.load(indexDir);
         Indexer indexer = new Indexer(metrics);
-        AnalysisEngine engine = new JavaParserEngine(workspace);
+        long tEngine = System.nanoTime();
+        AnalysisEngine engine = new JavaParserEngine(workspace); // cold: reads every dependency jar
+        metrics.timer("startup.engine_build").record(System.nanoTime() - tEngine);
         Path repoRoot = workspace.projectRoot().toAbsolutePath().normalize();
 
+        long tScan = System.nanoTime();
         EdgeResolver resolver = EdgeResolver.over(store, usageIndex, fileTable, engine, repoRoot, metrics);
         FreshnessGuard guard = new FreshnessGuard(repoRoot, indexDir, fileTable, store, indexer, source,
                 Workspace.discoverSourceSets(repoRoot), metrics);
+        metrics.timer("startup.scan").record(System.nanoTime() - tScan);
         Cascade cascade = new Cascade(guard, resolver, store);
         return new AnalysisSession(store, fileTable, resolver, guard, source, cascade, repoRoot, false);
     }
@@ -107,19 +113,25 @@ public final class AnalysisSession implements AutoCloseable {
      */
     public static AnalysisSession openReadOnly(Path indexDir, Workspace workspace, Metrics metrics)
             throws IOException {
+        long t0 = System.nanoTime();
         LsmStore store = LsmStore.openReadOnly(indexDir, metrics);
+        metrics.timer("startup.store_open").record(System.nanoTime() - t0);
         Path usagePath = indexDir.resolve(UsageNameIndexer.FILE_NAME);
         UsageNameIndex usageIndex = Files.exists(usagePath) ? UsageNameIndex.load(usagePath) : null;
         FileTable fileTable = FileTable.load(indexDir);
         Indexer indexer = new Indexer(metrics);
-        AnalysisEngine engine = new JavaParserEngine(workspace);
+        long tEngine = System.nanoTime();
+        AnalysisEngine engine = new JavaParserEngine(workspace); // cold: reads every dependency jar
+        metrics.timer("startup.engine_build").record(System.nanoTime() - tEngine);
         Path repoRoot = workspace.projectRoot().toAbsolutePath().normalize();
 
         // No proactive change producer: read-only never reindexes, so there is nothing to drain.
         FreshnessSource source = FreshnessSource.none();
+        long tScan = System.nanoTime();
         EdgeResolver resolver = EdgeResolver.over(store, usageIndex, fileTable, engine, repoRoot, metrics);
         FreshnessGuard guard = new FreshnessGuard(repoRoot, indexDir, fileTable, store, indexer, source,
                 Workspace.discoverSourceSets(repoRoot), metrics);
+        metrics.timer("startup.scan").record(System.nanoTime() - tScan);
         Cascade cascade = new Cascade(guard, resolver, store);
         return new AnalysisSession(store, fileTable, resolver, guard, source, cascade, repoRoot, true);
     }

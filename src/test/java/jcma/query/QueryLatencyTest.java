@@ -39,7 +39,7 @@ class QueryLatencyTest {
     @BeforeAll
     static void indexCorpusOnce() {
         if (Files.isDirectory(CORPUS)) {
-            IndexFixture.build(CORPUS, indexDir);
+            IndexFixture.buildWithCachedClasspath(CORPUS, indexDir);
         }
     }
 
@@ -48,7 +48,7 @@ class QueryLatencyTest {
         assumeTrue(Files.isDirectory(CORPUS), "pinned commons-lang corpus present");
 
         try (QueryService svc = new QueryService(
-                AnalysisSession.open(indexDir, Workspace.discover(CORPUS), Metrics.create()))) {
+                AnalysisSession.open(indexDir, Workspace.discover(CORPUS, indexDir), Metrics.create()))) {
             Symbol target = svc.declarations("getProperty", GENEROUS).stream()
                     .filter(s -> HOT_MONIKER.equals(s.moniker()))
                     .findFirst().orElseThrow(() -> new AssertionError("SystemProperties.getProperty(String) not indexed"));

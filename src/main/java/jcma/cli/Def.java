@@ -47,8 +47,10 @@ final class Def {
             err.println("jcma: no index for " + repo + " — run `jcma index` first");
             return 1;
         }
+        Workspace workspace = Workspace.discover(repo, indexDir);
+        err.println("jcma: loading " + workspace.classpathJars().size() + " dependency jars…");
         try (QuerySessions.Held held = QuerySessions.open(
-                indexDir, Workspace.discover(repo), FreshnessSource.none(), Metrics.noop(), err)) {
+                indexDir, workspace, FreshnessSource.none(), Metrics.noop(), err)) {
             QueryService svc = held.service();
             return a.length == 2
                     ? bySymbol(svc, a[1], deadline, out, err)

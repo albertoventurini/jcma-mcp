@@ -76,7 +76,7 @@ final class Serve {
             return 1;
         }
 
-        Workspace workspace = Workspace.discover(repo);
+        Workspace workspace = Workspace.discover(repo, indexDir);
         Metrics metrics = Metrics.create();
         // Per-repo, size-bounded JSON call log — the only persistent per-call trail (the wire carries none).
         CallLog callLog = FileCallLog.open(IndexLayout.serveLogFile(repo), 8L << 20);
@@ -127,6 +127,9 @@ final class Serve {
                 } else {
                     err.println("jcma: indexed " + stats.reparsed() + " file(s), " + stats.symbols() + " symbols");
                 }
+                // Always-on status line → the MCP-host server log (stderr): the jar reads in
+                // AnalysisSession.open are the residual cold cost, never a silent hang.
+                err.println("jcma: loading " + workspace.classpathJars().size() + " dependency jars…");
                 session.svc = new QueryService(AnalysisSession.open(
                         indexDir, workspace, new TreeScanSource(workspace.sourceRoots()), metrics));
             } catch (java.io.IOException e) {

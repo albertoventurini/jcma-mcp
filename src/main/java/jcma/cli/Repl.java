@@ -59,8 +59,10 @@ final class Repl {
             err.println("jcma: no index for " + repo + " — run `jcma index` first");
             return 1;
         }
-        Workspace workspace = Workspace.discover(repo);
+        Workspace workspace = Workspace.discover(repo, indexDir);
         FreshnessSource source = new TreeScanSource(workspace.sourceRoots());
+        // Always-on status line (the jar reads below are the residual cold cost): never a silent hang.
+        err.println("jcma: loading " + workspace.classpathJars().size() + " dependency jars…");
         try (QuerySessions.Held held = QuerySessions.open(indexDir, workspace, source, metrics, err);
                 Terminal terminal = TerminalBuilder.terminal()) {
             QueryService svc = held.service();

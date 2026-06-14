@@ -32,9 +32,9 @@ class HierarchyTransitiveCommonsIT {
     @Test
     void supertypesResolveTransitivelyToAProjectSuperclass() throws Exception {
         assumeTrue(Files.isDirectory(CORPUS), "pinned commons-lang corpus present");
-        IndexFixture.build(CORPUS, indexDir);
+        IndexFixture.buildWithCachedClasspath(CORPUS, indexDir);
 
-        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.discover(CORPUS), Metrics.create())) {
+        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.discover(CORPUS, indexDir), Metrics.create())) {
             Symbol target = resolver.declarations("ReflectionToStringBuilder").stream()
                     .filter(s -> "org/apache/commons/lang3/builder/ReflectionToStringBuilder#".equals(s.moniker()))
                     .findFirst().orElseThrow(() -> new AssertionError("ReflectionToStringBuilder not indexed"));

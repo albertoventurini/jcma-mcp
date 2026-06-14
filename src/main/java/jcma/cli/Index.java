@@ -52,6 +52,13 @@ final class Index {
         // Single-writer: indexing mutates the store; fail fast if a live serve/another writer owns it.
         try (IndexLock ignored = IndexLock.acquire(indexDir)) {
             Metrics metrics = Metrics.create();
+            // Resolve the build-tool classpath here (the slow mvn/gradle subprocess) and persist it to
+            // the index dir, so later repl/serve/query sessions read a file instead of re-spawning it.
+            // A re-index re-resolves and overwrites, tying classpath freshness to the index lifecycle.
+            long cpStart = System.nanoTime();
+            List<Path> jars = Workspace.persistClasspath(repo, indexDir);
+            metrics.timer("index.classpath_resolve").record(System.nanoTime() - cpStart);
+            out.printf("classpath: resolved %d jar(s) → %s%n", jars.size(), IndexLayout.classpathCache(indexDir));
             Reconciler.ReindexStats stats;
             try (LsmStore store = LsmStore.open(indexDir, CompactionPolicy.manual(), metrics)) {
                 stats = new Reconciler(new Indexer(metrics), metrics).reindex(repo, roots, store, indexDir);

@@ -70,8 +70,8 @@ class ToolsCommonsIT {
     // ------------------------------------------------------------------ helpers
 
     private static QueryService corpusService(Path indexDir) throws Exception {
-        IndexFixture.build(CORPUS, indexDir);
-        return new QueryService(AnalysisSession.open(indexDir, Workspace.discover(CORPUS), Metrics.noop()));
+        IndexFixture.buildWithCachedClasspath(CORPUS, indexDir);
+        return new QueryService(AnalysisSession.open(indexDir, Workspace.discover(CORPUS, indexDir), Metrics.noop()));
     }
 
     private static final Pattern FOUND_REF =

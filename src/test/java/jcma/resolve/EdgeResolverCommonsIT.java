@@ -44,6 +44,11 @@ class EdgeResolverCommonsIT {
         }
     }
 
+    /** Cache-aware workspace for the corpus — reads the seeded index-dir classpath cache (task-09). */
+    private static Workspace corpusWorkspace() {
+        return Workspace.discover(CORPUS, indexDir);
+    }
+
     @Test
     void reproducesLabeledFoundRefsForTheTopSymbol() throws Exception {
         assumeTrue(Files.isDirectory(CORPUS), "pinned commons-lang corpus present");
@@ -53,7 +58,7 @@ class EdgeResolverCommonsIT {
         Set<String> labeled = labeledFoundRefs(WORKSHEET);   // keyed "ClassName.java:line"
         assumeTrue(labeled.size() > 50, "worksheet has a substantial labeled set: " + labeled.size());
 
-        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.discover(CORPUS), Metrics.create())) {
+        try (EdgeResolver resolver = EdgeResolver.open(indexDir, corpusWorkspace(), Metrics.create())) {
             Symbol target = resolver.declarations("getProperty").stream()
                     .filter(s -> "org/apache/commons/lang3/SystemProperties#getProperty(String).".equals(s.moniker()))
                     .findFirst().orElseThrow(() -> new AssertionError("SystemProperties.getProperty(String) not indexed"));
@@ -73,7 +78,7 @@ class EdgeResolverCommonsIT {
     void overloadedSymbolSurfacesAnUnconfirmedTail() throws Exception {
         assumeTrue(Files.isDirectory(CORPUS), "pinned commons-lang corpus present");
 
-        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.discover(CORPUS), Metrics.create())) {
+        try (EdgeResolver resolver = EdgeResolver.open(indexDir, corpusWorkspace(), Metrics.create())) {
             // The M0 finding: at least one isEmpty overload has candidates that cannot be disambiguated.
             List<Symbol> overloads = resolver.declarations("isEmpty");
             assumeTrue(!overloads.isEmpty(), "isEmpty overloads indexed");
@@ -100,7 +105,7 @@ class EdgeResolverCommonsIT {
         assumeTrue(Files.isDirectory(CORPUS), "pinned commons-lang corpus present");
 
         Metrics metrics = Metrics.create();
-        try (EdgeResolver resolver = EdgeResolver.open(indexDir, Workspace.discover(CORPUS), metrics)) {
+        try (EdgeResolver resolver = EdgeResolver.open(indexDir, corpusWorkspace(), metrics)) {
             Symbol target = resolver.declarations("getProperty").stream()
                     .filter(s -> "org/apache/commons/lang3/SystemProperties#getProperty(String).".equals(s.moniker()))
                     .findFirst().orElseThrow(() -> new AssertionError("SystemProperties.getProperty(String) not indexed"));
@@ -147,6 +152,6 @@ class EdgeResolverCommonsIT {
     }
 
     private static void index(Path repo, Path indexDir) {
-        IndexFixture.build(repo, indexDir);
+        IndexFixture.buildWithCachedClasspath(repo, indexDir);
     }
 }

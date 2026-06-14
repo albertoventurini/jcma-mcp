@@ -21,6 +21,9 @@ public final class IndexLayout {
 
     private IndexLayout() {}
 
+    /** The resolved-classpath cache file under an index dir (M2 task-09); see {@link #classpathCache}. */
+    public static final String CLASSPATH_CACHE = "classpath.txt";
+
     /** {@code ${XDG_CACHE_HOME:-$HOME/.cache}/jcma} — the shared root for all jcma cache artifacts. */
     public static Path cacheRoot() {
         String xdg = System.getenv("XDG_CACHE_HOME");
@@ -37,6 +40,17 @@ public final class IndexLayout {
      */
     public static Path defaultIndexDir(Path repo) {
         return cacheRoot().resolve("index").resolve(repoSlug(repo));
+    }
+
+    /**
+     * The resolved-classpath cache for an index: {@code <indexDir>/classpath.txt}, in the
+     * {@link java.io.File#pathSeparator}-joined format {@link Workspace#readClasspathJars} parses.
+     * {@code jcma index} writes it (resolving {@code mvn}/{@code gradle} once); every later session
+     * reads it instead of re-spawning the build tool (M2 task-09). Located under the index dir, like
+     * the other per-index segments, so it lives and dies with the index — never in the repo tree.
+     */
+    public static Path classpathCache(Path indexDir) {
+        return indexDir.resolve(CLASSPATH_CACHE);
     }
 
     /**

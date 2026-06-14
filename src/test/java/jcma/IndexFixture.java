@@ -6,11 +6,14 @@ import jcma.index.LsmStore;
 import jcma.index.SourceRoot;
 import jcma.index.SourceSet;
 import jcma.obs.Metrics;
+import jcma.workspace.IndexLayout;
 import jcma.workspace.Reconciler;
 import jcma.workspace.Workspace;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -41,6 +44,27 @@ public final class IndexFixture {
             new Reconciler(new Indexer(metrics), metrics).reindex(repo, roots, store, indexDir);
         } catch (Exception e) {
             throw new RuntimeException("IndexFixture.build failed for " + repo, e);
+        }
+    }
+
+    /**
+     * As {@link #build}, plus seed the index-dir classpath cache ({@link IndexLayout#classpathCache})
+     * from {@code repo}'s committed {@code cp.txt} when present — the M0 corpora ship one. This mirrors
+     * what {@code jcma index} does (resolve + persist the classpath once, M2 task-09) without a live
+     * {@code mvn}/{@code gradle} subprocess, so a cache-aware {@code Workspace.discover(repo, indexDir)}
+     * resolves the corpus's dependencies offline and deterministically.
+     */
+    public static void buildWithCachedClasspath(Path repo, Path indexDir) {
+        build(repo, indexDir);
+        Path committedCp = repo.resolve("cp.txt");
+        if (Files.isRegularFile(committedCp)) {
+            try {
+                Files.createDirectories(indexDir);
+                Files.copy(committedCp, IndexLayout.classpathCache(indexDir),
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException e) {
+                throw new RuntimeException("IndexFixture: seeding classpath cache failed for " + repo, e);
+            }
         }
     }
 }

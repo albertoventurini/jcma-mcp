@@ -18,10 +18,6 @@ milestones/m0-spike/out/
 # net for anyone who passes an explicit `jcma index <repo> .jcma`.
 .jcma/
 
-# Auto-generated classpath cache (machine-specific absolute paths; written by Workspace
-# discovery via `mvn dependency:build-classpath` or the Gradle init-script path)
-cp.txt
-
 # Editor / OS
 .idea/
 *.iml
