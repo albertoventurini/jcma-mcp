@@ -190,7 +190,7 @@ val crossJarFixtureJar by tasks.registering(Jar::class) {
 
 tasks.register("crossJarSmoke") {
     group = "verification"
-    description = "Native cross-jar resolve smoke — does JarTypeSolver resolve under native-image?"
+    description = "Native cross-jar resolve smoke — does JarTypeSolver resolve a real Maven dependency under native-image?"
     dependsOn(tasks.named("nativeCompile"), crossJarFixtureJar)
     doLast {
         val binary = layout.buildDirectory.file("native/nativeCompile/jcma").get().asFile
@@ -198,9 +198,33 @@ tasks.register("crossJarSmoke") {
         require(binary.exists()) { "native binary missing (run nativeCompile): $binary" }
         require(jar.exists()) { "fixture jar missing: $jar" }
 
-        // Stage a temp project: the caller App.java under standard layout, a pom (so the workspace
-        // discovers it), and a cp.txt pointing only at the fixture jar — the callee lives nowhere
-        // else, so a successful resolve is necessarily through JarTypeSolver.
+        // The realistic shape: the callee lives in a third-party jar that the caller declares as a
+        // Maven dependency. We install the fixture jar into the local repo as a real artifact, then
+        // let jcma resolve the classpath the *production* way — `mvn dependency:build-classpath`,
+        // driven by the pom below — so the callee reaches JarTypeSolver exactly as a real dependency
+        // would. No cp.txt, no hand-seeded cache: the jar is on the classpath only because Maven put
+        // it there. This exercises Workspace.mavenClasspath end-to-end under the native binary.
+        fun runMaven(vararg args: String) {
+            val proc = try {
+                ProcessBuilder(listOf("mvn", "-q", *args))
+                    .redirectErrorStream(true).start()
+            } catch (e: java.io.IOException) {
+                throw GradleException(
+                    "crossJarSmoke requires `mvn` on PATH to install + resolve the fixture dependency " +
+                        "(this smoke now models a real Maven dependency, not a cp.txt injection): ${e.message}")
+            }
+            val out = proc.inputStream.bufferedReader().readText()
+            if (proc.waitFor() != 0) {
+                throw GradleException("mvn ${args.joinToString(" ")} failed:\n$out")
+            }
+        }
+
+        // 1. Install the fixture jar into the local repo as jcma.fixture:crossjar-lib:0.0.1.
+        runMaven("install:install-file", "-Dfile=${jar.absolutePath}",
+            "-DgroupId=jcma.fixture", "-DartifactId=crossjar-lib",
+            "-Dversion=0.0.1", "-Dpackaging=jar")
+
+        // 2. Stage the caller project: App.java under standard layout + a pom that DECLARES the dep.
         val proj = layout.buildDirectory.dir("fixtures/crossjar-project").get().asFile
         proj.deleteRecursively()
         val appDir = proj.resolve("src/main/java/crossjar/app").apply { mkdirs() }
@@ -214,12 +238,20 @@ tasks.register("crossJarSmoke") {
               <groupId>jcma.fixture</groupId>
               <artifactId>crossjar-app</artifactId>
               <version>0.0.1</version>
+              <dependencies>
+                <dependency>
+                  <groupId>jcma.fixture</groupId>
+                  <artifactId>crossjar-lib</artifactId>
+                  <version>0.0.1</version>
+                </dependency>
+              </dependencies>
             </project>
             """.trimIndent()
         )
-        proj.resolve("cp.txt").writeText(jar.absolutePath)
 
-        // App.java line 12 col 22: `        String s = g.hello("world");` — the `hello` call.
+        // 3. Resolve: discover() finds the pom, runs `mvn dependency:build-classpath` (which puts
+        //    crossjar-lib.jar on the classpath), and JarTypeSolver resolves `hello` into the jar.
+        //    App.java line 12 col 22: `        String s = g.hello("world");` — the `hello` call.
         val proc = ProcessBuilder(binary.absolutePath, "resolve", appDst.absolutePath, "12:22")
             .redirectErrorStream(true).start()
         val output = proc.inputStream.bufferedReader().readText()
@@ -228,9 +260,10 @@ tasks.register("crossJarSmoke") {
         val expected = "crossjar.lib.Greeting.hello(java.lang.String)"
         if (code != 0 || !output.contains(expected)) {
             throw GradleException(
-                "cross-jar smoke FAILED (exit=$code) — expected `$expected` via JarTypeSolver:\n$output")
+                "cross-jar smoke FAILED (exit=$code) — expected `$expected` via JarTypeSolver " +
+                    "(crossjar-lib resolved as a Maven dependency):\n$output")
         }
-        println("cross-jar smoke OK — JarTypeSolver resolves through the native image")
+        println("cross-jar smoke OK — JarTypeSolver resolves a Maven dependency through the native image")
     }
 }
 
