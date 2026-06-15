@@ -48,8 +48,9 @@ Outputs (under `qa/out/`, `<repo>` = the repo's directory name):
 | `<repo>-oracle.tsv` / `<repo>-jcma.tsv` | the raw dependency sets each side produced |
 
 The script is idempotent and deterministic: it uses a fresh temp `XDG_CACHE_HOME` per run (so it never
-collides with a live `jcma serve` index lock), and re-running yields identical TSVs. Only
-`tiko-trust-rule-engine-report.md` is committed as a sample; the rest of `qa/out/` is git-ignored.
+collides with a live `jcma serve` index lock), and re-running yields identical TSVs. The generated
+artifacts (report, diffs, raw TSVs) are host-dependent and reproducible, so they are **not** committed —
+only the hand-written `tiko-trust-rule-engine-spotcheck.md` (authored divergence analysis) is.
 
 ## Reading the numbers
 
