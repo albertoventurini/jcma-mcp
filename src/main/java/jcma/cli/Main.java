@@ -57,6 +57,9 @@ public final class Main {
             case "resolve" -> {
                 return resolve(a, out, err);
             }
+            case "resolve-file" -> {
+                return ResolveFile.run(a, out, err);
+            }
             case "index-dump" -> {
                 return IndexDump.run(a, out, err);
             }
@@ -173,6 +176,8 @@ public final class Main {
                   resolve <file> <line:col>
                                        resolve the symbol at a 1-based position; print its
                                        FQN, signature, and declaration site
+                  resolve-file <file>  resolve a file's whole-file type dependencies (supertypes +
+                                       type references per declared type) as TSV (QA surface)
                   index-dump --symbols <indexDir>
                                        list the symbols + monikers in a persisted index store
                   index-dump --edges <indexDir> <moniker>

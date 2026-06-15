@@ -47,8 +47,12 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Default {@link AnalysisEngine}: JavaParser + JavaSymbolSolver, ported from the M0 spike wiring
@@ -384,6 +388,65 @@ public final class JavaParserEngine implements AnalysisEngine {
             addOverrides(out, md);
         }
         return out;
+    }
+
+    /**
+     * Whole-file dependency extraction behind the QA {@code resolve-file} surface: for every declared
+     * type in {@code unit}, its direct supertypes ({@code EXTENDS}/{@code IMPLEMENTS}) and every
+     * resolved type/annotation mention in its body, each attributed to its <em>immediately enclosing</em>
+     * declared type. Unlike the name-scoped {@link #resolveTypeReferences}, this drops the name filter
+     * so every type-mention is resolved — but through the <em>same</em> per-node {@link #attempt}, so the
+     * per-mention resolution (the accuracy-determining step) is identical to a real {@code
+     * find_references}; only the selection is exhaustive. Triples are deduped per {@code (relation,
+     * owner, target)}. Unresolved mentions safe-degrade to a {@code resolved=false} entry keyed by the
+     * use-site's simple name (never a guessed FQN).
+     */
+    public List<TypeDependency> resolveFileDependencies(ParsedUnit unit) {
+        // owner attribution for supertypes: resolveHierarchy reports the declaring type's name
+        // position, so map each declared type's name position → its canonical FQN once.
+        Map<Long, String> ownerByNamePos = new HashMap<>();
+        for (TypeDeclaration<?> td : unit.cu().findAll(TypeDeclaration.class)) {
+            int[] at = namePos(td.getName());
+            td.getFullyQualifiedName().ifPresent(fqn -> ownerByNamePos.put(posKey(at[0], at[1]), fqn));
+        }
+
+        Set<TypeDependency> out = new LinkedHashSet<>();
+        for (ResolvedHierarchy h : resolveHierarchy(unit)) {
+            if (h.kind() == HierarchyKind.OVERRIDES) {
+                continue; // OVERRIDES is method→method, not a type dependency
+            }
+            String owner = ownerByNamePos.get(posKey(h.srcLine(), h.srcCol()));
+            if (owner != null && h.target() != null && h.target().fqn() != null) {
+                out.add(new TypeDependency(TypeDependency.SUPERTYPE, owner, h.target().fqn(), true));
+            }
+        }
+        for (Occurrences.Occ o : Occurrences.scan(unit.cu())) {
+            if (o.kind() != OccurrenceKind.TYPE_REF && o.kind() != OccurrenceKind.ANNOTATION) {
+                continue;
+            }
+            String owner = enclosingTypeFqn(o.node());
+            if (owner == null) {
+                continue; // a local/anonymous type's mention has no canonical owner — skip (the oracle does too)
+            }
+            ResolvedOccurrence r = attempt(o);
+            if (r.isResolved() && r.target().fqn() != null) {
+                out.add(new TypeDependency(TypeDependency.TYPEREF, owner, r.target().fqn(), true));
+            } else {
+                out.add(new TypeDependency(TypeDependency.TYPEREF, owner, o.targetName(), false));
+            }
+        }
+        return new ArrayList<>(out);
+    }
+
+    /** The canonical FQN of the nearest enclosing declared type of {@code node}, or {@code null}. */
+    private static String enclosingTypeFqn(Node node) {
+        TypeDeclaration<?> td = node.findAncestor(TypeDeclaration.class).orElse(null);
+        return td == null ? null : td.getFullyQualifiedName().orElse(null);
+    }
+
+    /** Pack a 1-based {@code (line, col)} into one long key for the supertype owner map. */
+    private static long posKey(int line, int col) {
+        return ((long) line << 20) | (col & 0xFFFFF);
     }
 
     /** Resolve one {@code extends}/{@code implements} type and append its edge; guarded — skip on miss. */
