@@ -9,6 +9,16 @@
 > meta-model, unregistered under native-image (`NoSuchFieldError`). **Fixed** by giving that solver a
 > `RAW` (validator-free) `ParserConfiguration`. See **"Update (2026-06-08)"** below for the captured
 > trace, mechanism, and the applied fix; the rest of the doc is the original investigation.
+>
+> **Update (2026-06-15): the *resolving* parser no longer uses RAW.** RAW also dropped `yield`/record/
+> pattern parsing, sinking whole-file resolution (`docs/whole-file-resolution-degradation.md`). The
+> engine's resolving parser now parses at the project's discovered Java level with the language-level
+> **validator post-processor stripped** (constructor processor index 3; the var→`VarType`
+> post-processor kept) — same native-safety as RAW (no reflective meta-model access) but with the
+> contextual features parsed. The **source-root `JavaParserTypeSolver`** parser described below **stays
+> RAW**: it extracts only declarations (unaffected by `yield` in a body), so RAW's native-safety is free
+> there. The `NoSuchFieldError` mechanism documented here is exactly why the resolving parser strips the
+> validator rather than raising the level naively.
 
 ## TL;DR
 

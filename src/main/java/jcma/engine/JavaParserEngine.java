@@ -4,6 +4,7 @@ import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParseResult;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ParserConfiguration.LanguageLevel;
+import com.github.javaparser.Processor;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.MethodDeclaration;
@@ -23,6 +24,7 @@ import com.github.javaparser.ast.nodeTypes.NodeWithExtends;
 import com.github.javaparser.ast.nodeTypes.NodeWithImplements;
 import com.github.javaparser.ast.nodeTypes.NodeWithTypeArguments;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
+import com.github.javaparser.ast.validator.postprocessors.Java10PostProcessor;
 import com.github.javaparser.resolution.TypeSolver;
 import com.github.javaparser.resolution.declarations.AssociableToAST;
 import com.github.javaparser.resolution.declarations.ResolvedConstructorDeclaration;
@@ -53,6 +55,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * Default {@link AnalysisEngine}: JavaParser + JavaSymbolSolver, ported from the M0 spike wiring
@@ -82,13 +85,22 @@ public final class JavaParserEngine implements AnalysisEngine {
     // refresh() — always the same solver the parser's SymbolResolver uses.
     private volatile TypeSolver typeSolver;
 
+    // The language level the resolving parser parses at (buildParser()/resolvingConfig). Derived from
+    // the build's discovered source level, else jcma's runtime JDK feature version (clamped to the
+    // JavaParser enum range by levelFor). A non-null level makes yield/records/sealed/patterns parse so
+    // the compilation unit is problem-free and JavaParser attaches its SymbolResolver to the whole CU
+    // (including inside a switch-expression's yield block arm, which RAW's error recovery discarded).
+    private final LanguageLevel resolvingLevel;
+
     // The source-root JavaParserTypeSolvers' own parser config. Built once and reused across every
     // refresh() (unlike the engine parser's config, which rebinds its SymbolResolver to each rebuild's
     // CombinedTypeSolver): this one carries NO resolver — the source solver only extracts type
-    // declarations by name — so it is refresh-invariant. RAW skips the post-parse language-level
-    // validators, same as buildParser()'s parser: those validators read node properties through
-    // JavaParser's reflective meta-model, a native-image NoSuchFieldError hazard (the JavaParserTypeSolver
-    // default is BLEEDING_EDGE, which runs them, so without this the source re-parse fails under native).
+    // declarations by name, which `yield` in a method body does not affect — so it is refresh-invariant
+    // AND unaffected by the language level. RAW keeps it trivially native-safe: it skips the post-parse
+    // language-level validators (which read node properties through JavaParser's reflective meta-model,
+    // a native-image NoSuchFieldError hazard — docs/native-jdk-resolution-gap.md), so the source
+    // re-parse needs no level/validator change. The resolving parser, which must see yield/patterns,
+    // instead parses at the project level with the validator stripped (resolvingConfig).
     private final ParserConfiguration sourceSolverConfig =
             new ParserConfiguration().setLanguageLevel(LanguageLevel.RAW);
 
@@ -129,7 +141,23 @@ public final class JavaParserEngine implements AnalysisEngine {
             }
         }
         this.sourceRoots = List.copyOf(roots);
+        // Parse the resolving CU at the build's source level (else jcma's runtime JDK) so version-gated
+        // contextual features — yield/records/sealed/patterns — parse. Derived from the build, not
+        // forced to newest: contextual keywords cut both ways, and an old-level project may use
+        // `record`/`yield` as identifiers, which the newest grammar would misparse.
+        int level = workspace.discoveredJavaLevel().orElse(Runtime.version().feature());
+        this.resolvingLevel = levelFor(level);
         this.parser = buildParser();
+    }
+
+    /**
+     * Map a JDK feature version to a JavaParser {@link LanguageLevel}, clamped to the enum's supported
+     * range {@code [8, 26]} (3.28.2) — so a JDK newer than JavaParser knows maps to the newest known
+     * level, and an ancient declared level maps to the oldest we still parse with full features.
+     */
+    private static LanguageLevel levelFor(int feature) {
+        int n = Math.max(8, Math.min(26, feature));
+        return LanguageLevel.valueOf("JAVA_" + n);
     }
 
     /**
@@ -153,15 +181,44 @@ public final class JavaParserEngine implements AnalysisEngine {
         for (TypeSolver jar : jarSolvers) {
             solver.add(jar);
         }
-        // RAW skips the post-parse language-level validators (see StructuralParser): they read node
-        // properties through JavaParser's reflective meta-model, which is a native-image NoSuchFieldError
-        // hazard and gives us nothing (we emit no diagnostics). Symbol resolution is driven by the
-        // SymbolResolver below, independent of the language level, so it is unaffected.
-        ParserConfiguration config = new ParserConfiguration()
-                .setLanguageLevel(LanguageLevel.RAW)
-                .setSymbolResolver(new JavaSymbolSolver(solver));
         this.typeSolver = solver; // retained for attempt()'s name-as-type fallback (same solver as above)
-        return new JavaParser(config);
+        return new JavaParser(resolvingConfig(resolvingLevel, solver));
+    }
+
+    /**
+     * The resolving parser's configuration: parse at the project's {@link #resolvingLevel} (so
+     * {@code yield}/records/sealed/patterns parse and the symbol resolver attaches to the whole CU),
+     * resolve through {@code solver}, but <b>strip the language-level validator</b>.
+     *
+     * <p>JavaParser's {@link ParserConfiguration} constructor installs a fixed processor pipeline; the
+     * entry at <b>index 3</b> runs the level's {@code PostProcessor} <em>and</em> its {@code Validator}.
+     * The validator walks the AST through JavaParser's reflective meta-model
+     * ({@code PropertyMetaModel.getValue}) — the native-image {@code NoSuchFieldError} hazard that made
+     * RAW the original choice (docs/native-jdk-resolution-gap.md) — and we emit no diagnostics, so it is
+     * pure cost. We replace index 3 with a processor that runs <em>only</em> the post-processor's
+     * {@code var}→{@code VarType} conversion ({@link Java10PostProcessor}, inherited unchanged by every
+     * level 10–26), keeping {@code var} resolvable while touching no reflective meta-model. Index 3 is
+     * the constructor-fixed slot for the language post-processor+validator in javaparser 3.28.2 (the
+     * pinned dependency); the engine guard test ({@code JavaParserEngineLevelTest}) pins this layout
+     * behaviorally, so a version bump that shifts it fails loudly rather than silently re-enabling the
+     * validator. The other slots (resolver injection at index 4, etc.) are untouched.
+     *
+     * <p>Package-private static so the guard test can build the exact same config and pin the index-3
+     * surgery directly (yield resolves, var resolves, a validator-flagged construct yields no problem).
+     */
+    static ParserConfiguration resolvingConfig(LanguageLevel level, TypeSolver solver) {
+        ParserConfiguration config = new ParserConfiguration()
+                .setLanguageLevel(level)
+                .setSymbolResolver(new JavaSymbolSolver(solver));
+        List<Supplier<Processor>> processors = config.getProcessors();
+        processors.set(3, () -> new Processor() {
+            @Override
+            public void postProcess(ParseResult<? extends Node> result, ParserConfiguration configuration) {
+                // var→VarType only; NOT languageLevel.validator.accept(...) — see method javadoc.
+                new Java10PostProcessor().postProcess(result, configuration);
+            }
+        });
+        return config;
     }
 
     /**

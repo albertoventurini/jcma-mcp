@@ -60,4 +60,30 @@ class ResolveFileDependenciesTest {
                         || got.contains("TYPEREF q.Sample.Inner -> q.Helper"),
                 "nested reference stays attributed to Inner");
     }
+
+    /**
+     * Regression for the whole-file resolution cliff (docs/whole-file-resolution-degradation.md): a
+     * source file containing a {@code yield} statement must not lose <em>all</em> its resolved type
+     * references. Under {@code LanguageLevel.RAW} the {@code yield} is a parse problem, which suppresses
+     * JavaParser's symbol-resolver injection and makes every mention in the unit safe-degrade — even
+     * ordinary types like {@code Helper} and {@code java.util.List}.
+     *
+     * <p>Beyond whole-file recovery, this also asserts {@code Yielded} — referenced <em>only inside</em>
+     * the {@code yield} block arm RAW would discard — resolves, locking the in-yield recovery that
+     * parsing at a real language level (validator stripped) uniquely gives (vs merely attaching the
+     * resolver under RAW, which cannot recover symbols inside the dropped arm).
+     */
+    @Test
+    void yieldStatementDoesNotSinkWholeFileResolution() throws Exception {
+        JavaParserEngine engine = engine();
+        ParsedUnit unit = engine.parse(DIR.resolve("q/Yielding.java"));
+
+        List<TypeDependency> deps = engine.resolveFileDependencies(unit);
+        Set<String> got = resolvedTriples(deps);
+
+        assertTrue(got.contains("TYPEREF q.Yielding -> q.Helper"), got.toString());
+        assertTrue(got.contains("TYPEREF q.Yielding -> java.util.List"), got.toString());
+        assertTrue(got.contains("TYPEREF q.Yielding -> q.Yielded"),
+                "a type referenced only inside the yield block arm must resolve: " + got);
+    }
 }

@@ -81,13 +81,19 @@ session's lifetime and runs the **refresh → cascade → serve** loop described
 
 ### Engine — `jcma.engine`
 `AnalysisEngine` is the interface; `JavaParserEngine` is the implementation
-(**JavaParser + JavaSymbolSolver**, `LanguageLevel.JAVA_25`). The interface exists so the engine
+(**JavaParser + JavaSymbolSolver**). The interface exists so the engine
 is swappable — the PRD's documented fallback was a javac-hybrid, which M0 proved unnecessary.
 `StructuralParser` does the cheap **parse-only** pass that builds Tier 1 (symbols, containment,
 signatures, unresolved occurrences, text units); the resolving methods (`resolveType`,
-`resolveMethodCall`, occurrences) are the Tier-2 SymbolSolver path. **Native-image constraint:**
-nothing here pulls in `javac` / `com.sun.source` — that is what keeps the native path reachable
-(PRD §4).
+`resolveMethodCall`, occurrences) are the Tier-2 SymbolSolver path. The **resolving** parser parses at
+the project's discovered Java level (from the build; runtime-JDK fallback) with the language-level
+**validator post-processor stripped** — so `yield`/records/sealed/patterns parse (the symbol resolver
+attaches to the whole CU) while no reflective meta-model is touched. The **source-root solver** and
+Tier-1 structural parse stay on `LanguageLevel.RAW` (they only extract declarations, unaffected by
+`yield` in a body; RAW keeps them trivially native-safe — see
+`docs/whole-file-resolution-degradation.md` / `docs/native-jdk-resolution-gap.md`).
+**Native-image constraint:** nothing here pulls in `javac` / `com.sun.source` — that is what keeps the
+native path reachable (PRD §4).
 
 ### Resolve — `jcma.resolve`
 **Tier-2 lazy-resolve-and-cache** (PRD §5.1), the heart of the design. `EdgeResolver` answers a

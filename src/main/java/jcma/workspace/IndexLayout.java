@@ -24,6 +24,9 @@ public final class IndexLayout {
     /** The resolved-classpath cache file under an index dir (M2 task-09); see {@link #classpathCache}. */
     public static final String CLASSPATH_CACHE = "classpath.txt";
 
+    /** The discovered source Java-level cache file under an index dir; see {@link #languageLevelCache}. */
+    public static final String LANGUAGE_LEVEL_CACHE = "java-level.txt";
+
     /** {@code ${XDG_CACHE_HOME:-$HOME/.cache}/jcma} — the shared root for all jcma cache artifacts. */
     public static Path cacheRoot() {
         String xdg = System.getenv("XDG_CACHE_HOME");
@@ -51,6 +54,19 @@ public final class IndexLayout {
      */
     public static Path classpathCache(Path indexDir) {
         return indexDir.resolve(CLASSPATH_CACHE);
+    }
+
+    /**
+     * The discovered source Java-level cache for an index: {@code <indexDir>/java-level.txt}, holding
+     * the build's declared {@code source}/{@code release} major version as a bare integer (e.g.
+     * {@code 17}). {@code jcma index} writes it alongside the classpath (resolving {@code mvn}/{@code
+     * gradle} once); later {@code resolve-file}/serve/query sessions read it so the engine parses at the
+     * project's level (yield/records/patterns) without re-spawning the build tool. Absent file → the
+     * engine falls back to its runtime JDK feature version. Lives under the index dir like the other
+     * per-index segments — never in the repo tree.
+     */
+    public static Path languageLevelCache(Path indexDir) {
+        return indexDir.resolve(LANGUAGE_LEVEL_CACHE);
     }
 
     /**

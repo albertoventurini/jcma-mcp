@@ -16,6 +16,7 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -53,6 +54,20 @@ public final class Workspace {
             Pattern.compile("(?m)^\\s*package\\s+([\\w.]+)\\s*;");
 
     /**
+     * Maven compiler-level tags, in resolution priority. {@code <release>} (compiler plugin) and
+     * {@code <maven.compiler.release>} (property) win over source, which wins over target — matching
+     * javac's own precedence. Each captures a major version, possibly {@code 1.x} (normalized later).
+     * Applied to {@code help:effective-pom} output (parent/property inheritance already resolved), or
+     * to the raw {@code pom.xml} as a no-subprocess fallback.
+     */
+    private static final Pattern MVN_RELEASE = Pattern.compile(
+            "<(?:maven\\.compiler\\.release|release)>\\s*(\\d+(?:\\.\\d+)?)\\s*</(?:maven\\.compiler\\.release|release)>");
+    private static final Pattern MVN_SOURCE = Pattern.compile(
+            "<(?:maven\\.compiler\\.source|source)>\\s*(\\d+(?:\\.\\d+)?)\\s*</(?:maven\\.compiler\\.source|source)>");
+    private static final Pattern MVN_TARGET = Pattern.compile(
+            "<(?:maven\\.compiler\\.target|target)>\\s*(\\d+(?:\\.\\d+)?)\\s*</(?:maven\\.compiler\\.target|target)>");
+
+    /**
      * Directory names skipped by the per-module source-root walk: VCS/IDE metadata and build-output
      * trees that can carry their own {@code src/main/java} (e.g. an exploded jar under {@code build/}),
      * which would otherwise be mis-tagged as project source.
@@ -63,11 +78,24 @@ public final class Workspace {
     /** Defensive cap on the per-module walk depth, against pathological/symlinked trees. */
     private static final int MODULE_WALK_MAX_DEPTH = 8;
 
+    /** Marker prefixes the Gradle init script tags its two output lines with (keyed, order-free). */
+    private static final String GRADLE_CLASSPATH_MARKER = "JCMA_CLASSPATH=";
+    private static final String GRADLE_LEVEL_MARKER = "JCMA_SRC_LEVEL=";
+
     /**
-     * Gradle init script (Groovy DSL) registering {@code jcmaPrintClasspath} on the root project: it
-     * prints the resolved {@code testRuntimeClasspath} (superset covering main + test deps; falls back
-     * to {@code runtimeClasspath}) as a single {@code File.pathSeparator}-joined line. A non-Java root
-     * (no such configuration) prints nothing, yielding an empty classpath.
+     * Gradle init script (Groovy DSL) registering {@code jcmaPrintClasspath} on the root project. It
+     * prints two keyed lines (prefixed {@link #GRADLE_CLASSPATH_MARKER} / {@link #GRADLE_LEVEL_MARKER}
+     * so the reader keys off the prefix rather than line position):
+     * <ul>
+     *   <li>the resolved {@code testRuntimeClasspath} (superset covering main + test deps; falls back
+     *       to {@code runtimeClasspath}) as a {@code File.pathSeparator}-joined list; and</li>
+     *   <li>the source Java major version, from (in order) {@code java.sourceCompatibility}, the
+     *       {@code compileJava} {@code options.release}, or the toolchain {@code languageVersion} — so
+     *       the engine can parse at the project's level (yield/records/patterns).</li>
+     * </ul>
+     * Every probe is guarded: a non-Java root, a missing configuration, or an unset level simply omits
+     * that line (→ empty classpath / runtime-JDK level fallback). {@code majorVersion} already
+     * normalizes {@code 1.8} → {@code 8}.
      */
     private static final String GRADLE_INIT_SCRIPT = """
             gradle.rootProject {
@@ -77,7 +105,27 @@ public final class Workspace {
                                 .collect { configurations.findByName(it) }
                                 .find { it != null }
                         if (cfg != null) {
-                            println cfg.files.collect { it.absolutePath }.join(File.pathSeparator)
+                            println 'JCMA_CLASSPATH=' + cfg.files.collect { it.absolutePath }.join(File.pathSeparator)
+                        }
+                        def level = null
+                        try {
+                            def sc = project.hasProperty('sourceCompatibility') ? project.sourceCompatibility : null
+                            if (sc != null) { level = sc.majorVersion }
+                        } catch (ignored) {}
+                        if (level == null) {
+                            try {
+                                def rel = tasks.findByName('compileJava')?.options?.release?.getOrNull()
+                                if (rel != null) { level = rel.toString() }
+                            } catch (ignored) {}
+                        }
+                        if (level == null) {
+                            try {
+                                def tc = project.extensions.findByName('java')?.toolchain?.languageVersion?.getOrNull()
+                                if (tc != null) { level = tc.asInt().toString() }
+                            } catch (ignored) {}
+                        }
+                        if (level != null) {
+                            println 'JCMA_SRC_LEVEL=' + level
                         }
                     }
                 }
@@ -87,12 +135,33 @@ public final class Workspace {
     private final Path projectRoot;
     private final List<Path> sourceRoots;
     private final List<Path> classpathJars;
+    private final OptionalInt discoveredJavaLevel;
 
-    /** Direct construction (used by tests and by the discovery factory). */
+    /**
+     * Direct construction with no discovered Java level (used by tests and {@link #ofSourceRoot}); the
+     * engine then falls back to its runtime JDK feature version when parsing.
+     */
     public Workspace(Path projectRoot, List<Path> sourceRoots, List<Path> classpathJars) {
+        this(projectRoot, sourceRoots, classpathJars, OptionalInt.empty());
+    }
+
+    /** Direct construction carrying the build-discovered source Java major version (or empty). */
+    public Workspace(Path projectRoot, List<Path> sourceRoots, List<Path> classpathJars,
+            OptionalInt discoveredJavaLevel) {
         this.projectRoot = projectRoot;
         this.sourceRoots = List.copyOf(sourceRoots);
         this.classpathJars = List.copyOf(classpathJars);
+        this.discoveredJavaLevel = discoveredJavaLevel;
+    }
+
+    /**
+     * Build-derived facts resolved together from a single {@code mvn}/{@code gradle} subprocess and
+     * cached side by side under the index dir: the dependency {@code classpath} and the source
+     * {@code javaLevel} (the build's declared {@code source}/{@code release} major version, or empty
+     * when the build declares none).
+     */
+    public record BuildFacts(List<Path> classpath, OptionalInt javaLevel) {
+        static final BuildFacts EMPTY = new BuildFacts(List.of(), OptionalInt.empty());
     }
 
     /**
@@ -113,21 +182,22 @@ public final class Workspace {
      * with an index dir should use {@link #discover(Path, Path)} to read the persisted cache instead.
      */
     public static Workspace discover(Path anyFile) {
-        return discover(anyFile, Workspace::resolveClasspath);
+        return discover(anyFile, Workspace::resolveBuildFacts);
     }
 
     /**
-     * As {@link #discover(Path)}, but the classpath comes from the {@link IndexLayout#classpathCache
-     * index dir cache} when present (the file {@code jcma index} wrote) — so the session reads a file
-     * instead of spawning a {@code mvn}/{@code gradle} subprocess. On a cache miss it live-resolves and
-     * <b>writes through</b> to the cache, so the next session is fast (M2 task-09).
+     * As {@link #discover(Path)}, but the classpath and source Java level come from the
+     * {@link IndexLayout#classpathCache index dir caches} when present (the files {@code jcma index}
+     * wrote) — so the session reads files instead of spawning a {@code mvn}/{@code gradle} subprocess.
+     * On a cache miss it live-resolves and <b>writes through</b> to the caches, so the next session is
+     * fast (M2 task-09).
      */
     public static Workspace discover(Path anyFile, Path indexDir) {
-        return discover(anyFile, projectRoot -> classpathFromCache(projectRoot, indexDir));
+        return discover(anyFile, projectRoot -> buildFactsFromCache(projectRoot, indexDir));
     }
 
-    /** Shared discovery body; {@code classpath} maps the resolved project root to its jar list. */
-    private static Workspace discover(Path anyFile, java.util.function.Function<Path, List<Path>> classpath) {
+    /** Shared discovery body; {@code facts} maps the resolved project root to its build-derived facts. */
+    private static Workspace discover(Path anyFile, java.util.function.Function<Path, BuildFacts> facts) {
         Path start = anyFile.toAbsolutePath().normalize();
         Path startDir = Files.isDirectory(start) ? start : start.getParent();
 
@@ -155,31 +225,68 @@ public final class Workspace {
         }
 
         Path root = projectRoot != null ? projectRoot : (startDir != null ? startDir : start);
-        List<Path> jars = projectRoot != null ? classpath.apply(projectRoot) : List.of();
-        return new Workspace(root, List.copyOf(roots), jars);
+        BuildFacts f = projectRoot != null ? facts.apply(projectRoot) : BuildFacts.EMPTY;
+        return new Workspace(root, List.copyOf(roots), f.classpath(), f.javaLevel());
     }
 
     /**
-     * Resolve {@code projectRoot}'s classpath once and persist it to {@link IndexLayout#classpathCache}
-     * under {@code indexDir} (M2 task-09) — called by {@code jcma index} so a re-index re-resolves and
-     * overwrites, tying classpath freshness to the index lifecycle. Returns the resolved jars (for the
-     * caller's report).
+     * Resolve {@code projectRoot}'s build facts once (one {@code mvn}/{@code gradle} subprocess) and
+     * persist them next to each other under {@code indexDir} (M2 task-09): the classpath to
+     * {@link IndexLayout#classpathCache} and the source Java level to {@link IndexLayout#languageLevelCache}.
+     * Called by {@code jcma index} so a re-index re-resolves and overwrites, tying both to the index
+     * lifecycle. Returns the resolved facts (for the caller's report).
      */
-    public static List<Path> persistClasspath(Path projectRoot, Path indexDir) {
-        List<Path> jars = resolveClasspath(projectRoot);
-        writeClasspathCache(IndexLayout.classpathCache(indexDir), jars);
-        return jars;
+    public static BuildFacts persistBuildFacts(Path projectRoot, Path indexDir) {
+        BuildFacts facts = resolveBuildFacts(projectRoot);
+        writeClasspathCache(IndexLayout.classpathCache(indexDir), facts.classpath());
+        writeJavaLevel(IndexLayout.languageLevelCache(indexDir), facts.javaLevel());
+        return facts;
     }
 
-    /** Cache-aware classpath: read {@code indexDir}'s cache if present, else resolve + write through. */
-    private static List<Path> classpathFromCache(Path projectRoot, Path indexDir) {
-        Path cache = IndexLayout.classpathCache(indexDir);
-        if (Files.isRegularFile(cache)) {
-            return readClasspathJars(cache);
+    /**
+     * Cache-aware build facts: when the classpath cache is present (the index has been built) read both
+     * caches (an absent/older level cache → empty, engine falls back to its runtime JDK); else resolve
+     * once and write both through. The classpath cache's presence is the index-built signal — keyed off
+     * it so a freshly-built index without the (newer) level file still reads from cache, not the build.
+     */
+    private static BuildFacts buildFactsFromCache(Path projectRoot, Path indexDir) {
+        Path cpCache = IndexLayout.classpathCache(indexDir);
+        if (Files.isRegularFile(cpCache)) {
+            return new BuildFacts(readClasspathJars(cpCache),
+                    readJavaLevel(IndexLayout.languageLevelCache(indexDir)));
         }
-        List<Path> jars = resolveClasspath(projectRoot);
-        writeClasspathCache(cache, jars);
-        return jars;
+        BuildFacts facts = resolveBuildFacts(projectRoot);
+        writeClasspathCache(cpCache, facts.classpath());
+        writeJavaLevel(IndexLayout.languageLevelCache(indexDir), facts.javaLevel());
+        return facts;
+    }
+
+    /** Write a discovered Java level as a bare integer to {@code cache} (best-effort; empty → no file). */
+    private static void writeJavaLevel(Path cache, OptionalInt level) {
+        if (level.isEmpty()) {
+            return; // nothing discovered → leave no file; readers fall back to the runtime JDK
+        }
+        try {
+            Path parent = cache.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            Files.writeString(cache, Integer.toString(level.getAsInt()));
+        } catch (IOException ignore) {
+            // best-effort: a later session just re-resolves on a miss
+        }
+    }
+
+    /** Read a bare-integer Java level from {@code cache} (the {@link #writeJavaLevel} format), or empty. */
+    public static OptionalInt readJavaLevel(Path cache) {
+        if (cache == null || !Files.isRegularFile(cache)) {
+            return OptionalInt.empty();
+        }
+        try {
+            return normalizeLevel(Files.readString(cache).trim());
+        } catch (IOException e) {
+            return OptionalInt.empty();
+        }
     }
 
     /** Write {@code jars} as a {@link File#pathSeparator}-joined line to {@code cache} (best-effort). */
@@ -265,17 +372,7 @@ public final class Workspace {
         } catch (IOException e) {
             return List.of();
         }
-        if (cp.isEmpty()) {
-            return List.of();
-        }
-        List<Path> jars = new ArrayList<>();
-        for (String entry : cp.split(Pattern.quote(File.pathSeparator))) {
-            String e = entry.trim();
-            if (e.endsWith(".jar")) {
-                jars.add(Path.of(e));
-            }
-        }
-        return List.copyOf(jars);
+        return cp.isEmpty() ? List.of() : splitClasspath(cp);
     }
 
     /** Source roots for a project root (untagged) — the {@link #discoverSourceSets} dirs in order. */
@@ -389,67 +486,114 @@ public final class Workspace {
     }
 
     /**
-     * Best-effort classpath jars for a project root, auto-detected from the build tool — {@code mvn
-     * dependency:build-classpath} for Maven, or a Gradle init script for Gradle — each writing a
-     * <b>private temp file</b> (never the repo tree) that we re-read, then delete. Any failure degrades
-     * to an empty classpath (source→source resolution still works). Persistence to the index dir is the
-     * caller's concern ({@link #persistClasspath} / {@link #classpathFromCache}), not this method's.
+     * Best-effort build facts (classpath + source Java level) for a project root, auto-detected from
+     * the build tool — Maven ({@code dependency:build-classpath} + {@code help:effective-pom}) or a
+     * Gradle init script — in a <b>single subprocess</b> per tool, each writing only <b>private temp
+     * files</b> (never the repo tree). Any failure degrades to {@link BuildFacts#EMPTY} (source→source
+     * resolution still works; the engine falls back to its runtime JDK level). Persistence to the index
+     * dir is the caller's concern ({@link #persistBuildFacts} / {@link #buildFactsFromCache}).
      */
-    private static List<Path> resolveClasspath(Path projectRoot) {
-        Path outFile = null;
+    private static BuildFacts resolveBuildFacts(Path projectRoot) {
+        if (Files.exists(projectRoot.resolve("pom.xml"))) {
+            return mavenBuildFacts(projectRoot);
+        }
+        if (isGradleRoot(projectRoot)) {
+            return gradleBuildFacts(projectRoot);
+        }
+        return BuildFacts.EMPTY;
+    }
+
+    /**
+     * Best-effort Maven build facts in one {@code mvn} invocation: {@code dependency:build-classpath}
+     * (→ classpath temp file) and {@code help:effective-pom} (→ resolved-POM temp file, parent/property
+     * inheritance already applied) whose {@code release}/{@code source}/{@code target} we regex
+     * ({@link #mavenLevelFromPom}). If that combined run fails (e.g. the help plugin isn't available
+     * offline) we retry classpath-only so the classpath never regresses, and read the level from the
+     * raw {@code pom.xml} as a no-subprocess fallback.
+     */
+    private static BuildFacts mavenBuildFacts(Path projectRoot) {
+        Path cpFile = null;
+        Path pomOut = null;
         try {
-            outFile = Files.createTempFile("jcma-cp", ".txt");
-            if (Files.exists(projectRoot.resolve("pom.xml"))) {
-                return mavenClasspath(projectRoot, outFile);
+            cpFile = Files.createTempFile("jcma-cp", ".txt");
+            pomOut = Files.createTempFile("jcma-pom", ".xml");
+            boolean ok = runMaven(projectRoot,
+                    "dependency:build-classpath", "-Dmdep.outputFile=" + cpFile.toAbsolutePath(),
+                    "help:effective-pom", "-Doutput=" + pomOut.toAbsolutePath());
+            List<Path> jars;
+            OptionalInt level;
+            if (ok) {
+                jars = readClasspathJars(cpFile);
+                level = mavenLevelFromPom(readOrEmpty(pomOut));
+            } else {
+                // The combined run failed — preserve the classpath via the original single-goal command,
+                // and take the level from the raw pom (no effective-pom resolution, best-effort).
+                jars = runMaven(projectRoot, "dependency:build-classpath",
+                        "-Dmdep.outputFile=" + cpFile.toAbsolutePath())
+                        ? readClasspathJars(cpFile) : List.of();
+                level = OptionalInt.empty();
             }
-            if (isGradleRoot(projectRoot)) {
-                return gradleClasspath(projectRoot, outFile);
+            if (level.isEmpty()) {
+                level = mavenLevelFromPom(readOrEmpty(projectRoot.resolve("pom.xml")));
             }
-            return List.of();
+            return new BuildFacts(jars, level);
         } catch (IOException e) {
-            return List.of(); // could not create the temp out-file → empty classpath
+            return BuildFacts.EMPTY; // could not create a temp out-file
         } finally {
-            if (outFile != null) {
-                try {
-                    Files.deleteIfExists(outFile);
-                } catch (IOException ignore) {
-                    // temp out-file cleanup is best-effort
-                }
-            }
+            deleteQuietly(cpFile);
+            deleteQuietly(pomOut);
         }
     }
 
-    /** Best-effort {@code mvn dependency:build-classpath} → writes {@code outFile}, re-read. */
-    private static List<Path> mavenClasspath(Path projectRoot, Path outFile) {
+    /** Run {@code mvn -q <goals/args…>} in {@code projectRoot}; true iff it exits 0. Drains stdout. */
+    private static boolean runMaven(Path projectRoot, String... goalsAndArgs) {
+        List<String> cmd = new ArrayList<>();
+        cmd.add("mvn");
+        cmd.add("-q");
+        cmd.addAll(List.of(goalsAndArgs));
         try {
-            Process proc = new ProcessBuilder("mvn", "-q",
-                    "dependency:build-classpath", "-Dmdep.outputFile=" + outFile.toAbsolutePath())
+            Process proc = new ProcessBuilder(cmd)
                     .directory(projectRoot.toFile())
                     .redirectErrorStream(true)
                     .start();
             proc.getInputStream().readAllBytes(); // drain so the subprocess can finish
-            if (proc.waitFor() == 0) {
-                return readClasspathJars(outFile);
-            }
+            return proc.waitFor() == 0;
         } catch (IOException | InterruptedException e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
-            // mvn unavailable/failed → empty classpath
+            return false; // mvn unavailable/failed
         }
-        return List.of();
     }
 
     /**
-     * Best-effort Gradle classpath: there is no built-in classpath task, so we feed an
-     * {@code --init-script} that registers {@code jcmaPrintClasspath} on the root project — it prints
-     * {@code testRuntimeClasspath} (the superset covering both main and test deps; falls back to
-     * {@code runtimeClasspath}) as a {@link File#pathSeparator}-joined list. We capture that line,
-     * write it to {@code outFile} (a private temp), and re-read. The wrapper ({@code gradlew}) is
-     * preferred over a {@code gradle} on {@code PATH}. Any failure (no Gradle, non-Java root, daemon
-     * error) degrades to an empty classpath.
+     * The source Java major version declared in a POM (effective or raw), or empty. Priority follows
+     * javac: {@code release} → {@code source} → {@code target}, each in either compiler-plugin
+     * ({@code <release>}) or property ({@code <maven.compiler.release>}) form, normalized so
+     * {@code 1.8} → {@code 8}.
      */
-    private static List<Path> gradleClasspath(Path projectRoot, Path outFile) {
+    static OptionalInt mavenLevelFromPom(String pom) {
+        for (Pattern p : List.of(MVN_RELEASE, MVN_SOURCE, MVN_TARGET)) {
+            Matcher m = p.matcher(pom);
+            if (m.find()) {
+                OptionalInt level = normalizeLevel(m.group(1));
+                if (level.isPresent()) {
+                    return level;
+                }
+            }
+        }
+        return OptionalInt.empty();
+    }
+
+    /**
+     * Best-effort Gradle build facts in one invocation: an {@code --init-script} registers
+     * {@code jcmaPrintClasspath}, which prints two keyed lines (classpath + source level; see
+     * {@link #GRADLE_INIT_SCRIPT}). We capture stdout and key off the marker prefixes
+     * ({@link #parseGradleFacts}). The wrapper ({@code gradlew}) is preferred over a {@code gradle} on
+     * {@code PATH}. Any failure (no Gradle, non-Java root, daemon error) degrades to
+     * {@link BuildFacts#EMPTY}.
+     */
+    private static BuildFacts gradleBuildFacts(Path projectRoot) {
         Path initScript = null;
         try {
             initScript = Files.createTempFile("jcma-cp", ".gradle");
@@ -461,27 +605,32 @@ public final class Workspace {
                     .start();
             String stdout = new String(proc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
             if (proc.waitFor() == 0) {
-                String cp = lastNonBlankLine(stdout);
-                if (cp != null) {
-                    Files.writeString(outFile, cp);
-                    return readClasspathJars(outFile);
-                }
+                return parseGradleFacts(stdout);
             }
         } catch (IOException | InterruptedException e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
-            // gradle unavailable/failed → empty classpath
+            // gradle unavailable/failed → empty facts
         } finally {
-            if (initScript != null) {
-                try {
-                    Files.deleteIfExists(initScript);
-                } catch (IOException ignore) {
-                    // temp init script cleanup is best-effort
-                }
+            deleteQuietly(initScript);
+        }
+        return BuildFacts.EMPTY;
+    }
+
+    /** Parse the init script's keyed stdout ({@code JCMA_CLASSPATH=…} / {@code JCMA_SRC_LEVEL=…}). */
+    static BuildFacts parseGradleFacts(String stdout) {
+        List<Path> jars = List.of();
+        OptionalInt level = OptionalInt.empty();
+        for (String line : stdout.split("\\R")) {
+            String l = line.trim();
+            if (l.startsWith(GRADLE_CLASSPATH_MARKER)) {
+                jars = splitClasspath(l.substring(GRADLE_CLASSPATH_MARKER.length()));
+            } else if (l.startsWith(GRADLE_LEVEL_MARKER)) {
+                level = normalizeLevel(l.substring(GRADLE_LEVEL_MARKER.length()).trim());
             }
         }
-        return List.of();
+        return new BuildFacts(jars, level);
     }
 
     /** The Gradle command: the project's wrapper if present, else a {@code gradle} on {@code PATH}. */
@@ -492,15 +641,59 @@ public final class Workspace {
         return Files.isRegularFile(w) ? w.toAbsolutePath().toString() : "gradle";
     }
 
-    /** The last non-blank line of {@code s} (the init-script's classpath line), or null if none. */
-    private static String lastNonBlankLine(String s) {
-        String last = null;
-        for (String line : s.split("\\R")) {
-            if (!line.isBlank()) {
-                last = line.trim();
+    /**
+     * Normalize a build-declared Java version to a bare major-version int: strips a {@code 1.} prefix
+     * ({@code 1.8} → {@code 8}) and any trailing non-digits. Empty when there is no leading digit.
+     */
+    private static OptionalInt normalizeLevel(String raw) {
+        String v = raw.trim();
+        if (v.startsWith("1.")) {
+            v = v.substring(2);
+        }
+        int i = 0;
+        while (i < v.length() && Character.isDigit(v.charAt(i))) {
+            i++;
+        }
+        if (i == 0) {
+            return OptionalInt.empty();
+        }
+        try {
+            return OptionalInt.of(Integer.parseInt(v.substring(0, i)));
+        } catch (NumberFormatException e) {
+            return OptionalInt.empty();
+        }
+    }
+
+    /** {@code File.pathSeparator}-split a classpath string into its {@code .jar} entries (in order). */
+    private static List<Path> splitClasspath(String cp) {
+        List<Path> jars = new ArrayList<>();
+        for (String entry : cp.split(Pattern.quote(File.pathSeparator))) {
+            String e = entry.trim();
+            if (e.endsWith(".jar")) {
+                jars.add(Path.of(e));
             }
         }
-        return last;
+        return List.copyOf(jars);
+    }
+
+    /** {@link Files#readString} tolerating a missing/unreadable file (→ empty string). */
+    private static String readOrEmpty(Path file) {
+        try {
+            return Files.isRegularFile(file) ? Files.readString(file) : "";
+        } catch (IOException e) {
+            return "";
+        }
+    }
+
+    /** Best-effort delete of a temp file (null-tolerant). */
+    private static void deleteQuietly(Path file) {
+        if (file != null) {
+            try {
+                Files.deleteIfExists(file);
+            } catch (IOException ignore) {
+                // temp file cleanup is best-effort
+            }
+        }
     }
 
     /** Whether {@code dir} is a project root: a Maven {@code pom.xml} or any Gradle build marker. */
@@ -526,5 +719,15 @@ public final class Workspace {
 
     public List<Path> classpathJars() {
         return classpathJars;
+    }
+
+    /**
+     * The build-discovered source Java major version (e.g. {@code 17}), or empty when the build declared
+     * none — in which case the engine parses at its runtime JDK feature version. Drives the engine's
+     * resolving parser language level so {@code yield}/records/sealed/patterns parse (and so the symbol
+     * resolver attaches to the whole compilation unit).
+     */
+    public OptionalInt discoveredJavaLevel() {
+        return discoveredJavaLevel;
     }
 }

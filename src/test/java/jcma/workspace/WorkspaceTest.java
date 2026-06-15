@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.OptionalInt;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -51,6 +52,67 @@ class WorkspaceTest {
         Path cpFile = dir.resolve("cp.txt");
         Files.writeString(cpFile, "  \n");
         assertTrue(Workspace.readClasspathJars(cpFile).isEmpty(), "blank cp.txt yields empty");
+    }
+
+    // ---------------------------------------------------------------- Java-level discovery
+
+    @Test
+    void mavenLevelPrefersReleaseThenSourceThenTarget() {
+        // release wins over source/target.
+        assertEquals(OptionalInt.of(21), Workspace.mavenLevelFromPom(
+                "<release>21</release><source>17</source><target>11</target>"),
+                "<release> wins");
+        // property form is recognized too, and source wins over target when no release.
+        assertEquals(OptionalInt.of(17), Workspace.mavenLevelFromPom(
+                "<maven.compiler.source>17</maven.compiler.source><maven.compiler.target>11</maven.compiler.target>"),
+                "<maven.compiler.source> wins over target");
+        assertEquals(OptionalInt.of(11), Workspace.mavenLevelFromPom("<target>11</target>"),
+                "<target> is the last resort");
+    }
+
+    @Test
+    void mavenLevelNormalizesOldStyleAndToleratesNone() {
+        assertEquals(OptionalInt.of(8), Workspace.mavenLevelFromPom("<source>1.8</source>"),
+                "1.8 normalizes to 8");
+        assertEquals(OptionalInt.empty(), Workspace.mavenLevelFromPom("<build><plugins/></build>"),
+                "a pom declaring no compiler level → empty (engine falls back to the runtime JDK)");
+        assertEquals(OptionalInt.empty(), Workspace.mavenLevelFromPom(""),
+                "a silent build → empty");
+    }
+
+    @Test
+    void gradleFactsParseKeyedClasspathAndLevelMarkers() {
+        String a = Path.of("/repo/a.jar").toString();
+        String b = Path.of("/repo/b.jar").toString();
+        String stdout = "> Task :jcmaPrintClasspath\n"
+                + "JCMA_CLASSPATH=" + String.join(File.pathSeparator, a, b) + "\n"
+                + "JCMA_SRC_LEVEL=17\n";
+        Workspace.BuildFacts facts = Workspace.parseGradleFacts(stdout);
+        assertEquals(List.of(Path.of(a), Path.of(b)), facts.classpath(),
+                "the JCMA_CLASSPATH marker line yields the jars, order-preserved");
+        assertEquals(OptionalInt.of(17), facts.javaLevel(),
+                "the JCMA_SRC_LEVEL marker line yields the level");
+    }
+
+    @Test
+    void gradleFactsToleratesMissingLevelMarker() {
+        Workspace.BuildFacts facts = Workspace.parseGradleFacts(
+                "JCMA_CLASSPATH=" + Path.of("/repo/a.jar") + "\n");
+        assertEquals(OptionalInt.empty(), facts.javaLevel(),
+                "no JCMA_SRC_LEVEL line → empty level (engine falls back to the runtime JDK)");
+    }
+
+    @Test
+    void javaLevelCacheRoundTrips(@TempDir Path indexDir) throws Exception {
+        Path cache = IndexLayout.languageLevelCache(indexDir);
+        Files.writeString(cache, "17");
+        assertEquals(OptionalInt.of(17), Workspace.readJavaLevel(cache), "bare integer round-trips");
+
+        Files.writeString(cache, "1.8\n");
+        assertEquals(OptionalInt.of(8), Workspace.readJavaLevel(cache), "old-style normalizes on read");
+
+        assertEquals(OptionalInt.empty(), Workspace.readJavaLevel(indexDir.resolve("absent.txt")),
+                "absent level cache → empty (engine falls back to the runtime JDK)");
     }
 
     // ---------------------------------------------------------------- pom source-dir discovery

@@ -52,13 +52,19 @@ final class Index {
         // Single-writer: indexing mutates the store; fail fast if a live serve/another writer owns it.
         try (IndexLock ignored = IndexLock.acquire(indexDir)) {
             Metrics metrics = Metrics.create();
-            // Resolve the build-tool classpath here (the slow mvn/gradle subprocess) and persist it to
-            // the index dir, so later repl/serve/query sessions read a file instead of re-spawning it.
-            // A re-index re-resolves and overwrites, tying classpath freshness to the index lifecycle.
+            // Resolve the build-tool facts here (the slow mvn/gradle subprocess) and persist them to the
+            // index dir, so later repl/serve/query sessions read files instead of re-spawning it: the
+            // dependency classpath, and the source Java level the engine parses at (yield/records/
+            // patterns). A re-index re-resolves and overwrites, tying both to the index lifecycle.
             long cpStart = System.nanoTime();
-            List<Path> jars = Workspace.persistClasspath(repo, indexDir);
+            Workspace.BuildFacts facts = Workspace.persistBuildFacts(repo, indexDir);
             metrics.timer("index.classpath_resolve").record(System.nanoTime() - cpStart);
-            out.printf("classpath: resolved %d jar(s) → %s%n", jars.size(), IndexLayout.classpathCache(indexDir));
+            out.printf("classpath: resolved %d jar(s) → %s%n",
+                    facts.classpath().size(), IndexLayout.classpathCache(indexDir));
+            out.printf("java level: %s → %s%n",
+                    facts.javaLevel().isPresent() ? Integer.toString(facts.javaLevel().getAsInt())
+                            : "(none declared; engine uses runtime JDK)",
+                    IndexLayout.languageLevelCache(indexDir));
             Reconciler.ReindexStats stats;
             try (LsmStore store = LsmStore.open(indexDir, CompactionPolicy.manual(), metrics)) {
                 stats = new Reconciler(new Indexer(metrics), metrics).reindex(repo, roots, store, indexDir);

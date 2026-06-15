@@ -348,3 +348,73 @@ tasks.register("nativeJdkGapSmoke") {
         println("native JDK-gap smoke OK — `new Service().run()` resolves under native (gap closed)")
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// docs/whole-file-resolution-degradation.md — the whole-file resolution cliff. A file with a `yield`
+// (switch-expression block arm) parsed at LanguageLevel.RAW gets a parse problem, so JavaParser skips
+// resolver injection and EVERY type mention safe-degrades to unconfirmed (whole-file zero-confirmed).
+// The fix parses the resolving CU at the project's level with the validator stripped: the CU is
+// problem-free (resolver attaches), the yield arm survives, and no reflective meta-model is touched
+// (native-safe). This smoke runs `resolve-file` on a yield-bearing file under the real native binary
+// and asserts type refs resolve — including one referenced only inside the yield arm — with no
+// NoSuchFieldError and no whole-file UNRESOLVED. Counterpart to the JVM yield regression test.
+tasks.register("nativeYieldResolveSmoke") {
+    group = "verification"
+    description = "Native repro of the whole-file resolution cliff — does a yield-bearing file resolve under the native binary?"
+    dependsOn(tasks.named("nativeCompile"))
+    doLast {
+        val binary = layout.buildDirectory.file("native/nativeCompile/jcma").get().asFile
+        require(binary.exists()) { "native binary missing (run nativeCompile): $binary" }
+
+        // Stage a no-pom/no-jars repo: discover() derives the source root from `package app;`, so
+        // resolution is pure source + JDK (java.util.List). No classpath cache → no build subprocess.
+        val repo = layout.buildDirectory.dir("fixtures/native-yield").get().asFile
+        repo.deleteRecursively()
+        val appDir = repo.resolve("app").apply { mkdirs() }
+        appDir.resolve("Helper.java").writeText("package app;\npublic class Helper {}\n")
+        appDir.resolve("Yielded.java").writeText("package app;\npublic class Yielded {}\n")
+        val yielder = appDir.resolve("Yielder.java")
+        yielder.writeText(
+            """
+            package app;
+            import java.util.List;
+            public class Yielder {
+                List<Helper> pick(int n) {
+                    return switch (n) {
+                        case 0 -> List.of();
+                        default -> {
+                            Yielded marker = new Yielded(); // only inside the yield arm
+                            Helper h = marker == null ? null : new Helper();
+                            yield List.of(h);
+                        }
+                    };
+                }
+            }
+            """.trimIndent() + "\n"
+        )
+
+        // JCMA_DEBUG=1 so any swallowed NoSuchFieldError prints (merged into stdout); XDG_CACHE_HOME at
+        // a private temp dir keeps this off any live index.
+        val cacheHome = layout.buildDirectory.dir("fixtures/native-yield-cache").get().asFile
+        cacheHome.deleteRecursively(); cacheHome.mkdirs()
+        val pb = ProcessBuilder(binary.absolutePath, "resolve-file", yielder.absolutePath)
+            .redirectErrorStream(true)
+        pb.environment()["JCMA_DEBUG"] = "1"
+        pb.environment()["XDG_CACHE_HOME"] = cacheHome.absolutePath
+        val proc = pb.start()
+        val output = proc.inputStream.bufferedReader().readText()
+        val code = proc.waitFor()
+        println(output)
+        val resolvedHelper = output.contains("TYPEREF\tapp.Yielder\tapp.Helper")
+        val resolvedYielded = output.contains("TYPEREF\tapp.Yielder\tapp.Yielded")
+        val resolvedList = output.contains("TYPEREF\tapp.Yielder\tjava.util.List")
+        if (code != 0 || output.contains("NoSuchFieldError")
+            || !resolvedHelper || !resolvedYielded || !resolvedList) {
+            throw GradleException(
+                "native yield smoke FAILED (exit=$code) — expected resolved TYPEREF rows for app.Helper, " +
+                    "app.Yielded (inside the yield arm) and java.util.List, with no NoSuchFieldError " +
+                    "(docs/whole-file-resolution-degradation.md):\n$output")
+        }
+        println("native yield smoke OK — yield-bearing file resolves under native (cliff closed)")
+    }
+}

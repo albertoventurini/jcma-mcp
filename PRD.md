@@ -107,6 +107,14 @@ listed under Open Questions.
   replaced by a host-derived, fingerprint-cached JDK **signature** index (M1 Task-02b). Only jcma's
   own deps + any MCP library still need reachability metadata (agent-traced). See M0-RESULTS §"Spike
   C" #3.
+- **Resolving parser = project Java level, validator stripped** (2026-06-15; supersedes the earlier
+  RAW-everywhere stance for this parser). The engine's *resolving* parser parses at the build's
+  discovered source level (runtime-JDK fallback) so `yield`/records/sealed/patterns parse and the
+  symbol resolver attaches to the whole compilation unit; the language-level **validator** is removed
+  (it walks JavaParser's reflective meta-model — a native-image `NoSuchFieldError` hazard — and we emit
+  no diagnostics). The source-root solver and the Tier-1 structural parse stay on `LanguageLevel.RAW`
+  (declarations only, native-safe for free). The level is cached at index time next to the classpath.
+  See `docs/whole-file-resolution-degradation.md` and `docs/native-jdk-resolution-gap.md`.
 
 ### Contingency / reversibility
 The engine sits behind an **`AnalysisEngine` interface**. If the Milestone 0 spike fails its
