@@ -41,9 +41,11 @@ You can install `jcma` as a Claude Code plugin.
 The plugin contributes the MCP-server wiring, but you need to download the binary manually;
 auto-download is not yet available.
 
-1. **Get the binary.** Download the `jcma` native image for your platform from the
-   [latest release](https://github.com/albertoventurini/jcma/releases/latest) and put it on `PATH`
-   (or set `JCMA_BINARY=/full/path/to/jcma`). To build it yourself: `./build-native-image.sh`.
+1. **Get the binary.** Download the native-image tarball for your platform (e.g.
+   `jcma-linux-amd64.tar.gz`) from the
+   [latest release](https://github.com/albertoventurini/jcma/releases/latest), extract it
+   (`tar -xzf jcma-*.tar.gz`), and put the `jcma` binary on `PATH` (or set
+   `JCMA_BINARY=/full/path/to/jcma`). To build it yourself: `./build-native-image.sh`.
    On platforms without a native build, use the `jcma-jvm.zip` fallback from the same release —
    unzip it and run `bin/jcma` (or `bin\jcma.bat` on Windows); it needs a JDK 25+ on `PATH`.
 2. **Index once per repo:** `jcma index .` (`serve` needs an existing index).

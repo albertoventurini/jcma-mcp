@@ -1,9 +1,5 @@
 name: Release
 
-# Fires when you publish a GitHub release (Releases → Draft/publish, or `gh release create`).
-# Each job builds an asset and attaches it to that release with `gh release upload`, so the
-# binaries land automatically — no manual download-and-attach. `workflow_dispatch` lets you
-# backfill assets onto an existing tag (e.g. the already-published v0.1.0).
 on:
   release:
     types: [published]
@@ -20,7 +16,6 @@ env:
   TAG: ${{ github.event.release.tag_name || inputs.tag }}
 
 jobs:
-  # Native single-file binaries — instant start, no JVM needed. One per OS/arch the runners give us.
   native:
     strategy:
       fail-fast: false
@@ -43,12 +38,14 @@ jobs:
           cache: 'gradle'
       - name: Build native image
         run: ./gradlew nativeCompile --no-daemon
-      - name: Stage binary
-        run: cp build/native/nativeCompile/jcma ${{ matrix.asset }}
+      - name: Package binary
+        run: |
+          cp build/native/nativeCompile/jcma jcma
+          tar -czf ${{ matrix.asset }}.tar.gz jcma
       - name: Attach to release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" ${{ matrix.asset }} --clobber
+        run: gh release upload "$TAG" ${{ matrix.asset }}.tar.gz --clobber
 
   # JVM fallback — `bin/jcma` (POSIX) + `bin/jcma.bat` (Windows) + lib/*.jar. Runs anywhere a
   # JDK 25+ does (Windows, other arches), trading native instant-start for portability.
