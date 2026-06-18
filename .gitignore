@@ -33,6 +33,6 @@ bin/
 # Stray dependency sources extracted by the IDE's "go to definition" (not project code)
 com/
 
-# Note: .mcp.json is now tracked — it's portable (${JCMA_BINARY:-jcma} +
-# ${CLAUDE_PROJECT_DIR}) and doubles as the Claude Code plugin's MCP declaration.
-# Machine-specific binary paths live in the (ignored) .claude/settings.local.json.
+# Note: .mcp.json is tracked — it's portable (${JCMA_BINARY:-jcma}) and wires local
+# dogfooding of jcma in this repo. The Claude Code plugin ships its own declaration at
+# plugin/.mcp.json. Machine-specific paths live in the (ignored) .claude/settings.local.json.

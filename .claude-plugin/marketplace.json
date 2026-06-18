@@ -4,8 +4,8 @@
   "plugins": [
     {
       "name": "jcma",
-      "source": "./",
-      "description": "Agent-native Java code-intelligence over MCP (download the jcma native binary separately)."
+      "source": "./plugin",
+      "description": "Agent-native Java code-intelligence over MCP. Auto-downloads the native binary (JVM fallback) on first run."
     }
   ]
 }

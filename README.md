@@ -37,23 +37,21 @@ jcma refs <symbol>                   # one-shot CLI queries: refs / def / supert
 Point an MCP client at the binary with `serve` (see [`.mcp.json`](.mcp.json) for the wiring).
 
 ## Install as a Claude Code plugin
-You can install `jcma` as a Claude Code plugin.
-The plugin contributes the MCP-server wiring, but you need to download the binary manually;
-auto-download is not yet available.
+You can install `jcma` as a Claude Code plugin — no manual binary download:
 
-1. **Get the binary.** Download the native-image tarball for your platform (e.g.
-   `jcma-linux-amd64.tar.gz`) from the
-   [latest release](https://github.com/albertoventurini/jcma/releases/latest), extract it
-   (`tar -xzf jcma-*.tar.gz`), and put the `jcma` binary on `PATH` (or set
-   `JCMA_BINARY=/full/path/to/jcma`). To build it yourself: `./build-native-image.sh`.
-   On platforms without a native build, use the `jcma-jvm.zip` fallback from the same release —
-   unzip it and run `bin/jcma` (or `bin\jcma.bat` on Windows); it needs a JDK 25+ on `PATH`.
-2. **Index once per repo:** `jcma index .` (`serve` needs an existing index).
-3. **Install in Claude Code:**
-   ```
-   /plugin marketplace add albertoventurini/jcma
-   /plugin install jcma@jcma
-   ```
+```
+/plugin marketplace add albertoventurini/jcma
+/plugin install jcma@jcma
+```
+
+At the next session start the plugin fetches the right native binary for your platform from the
+[matching release](https://github.com/albertoventurini/jcma/releases) (verified against the
+published `SHA256SUMS`) and caches it under the plugin's data dir — downloaded once, reused across
+updates. Platforms without a native build (Windows, other arches) transparently get the
+`jcma-jvm.zip` fallback, which needs a JDK 25+ on `PATH`. To use your own build instead, set
+`JCMA_BINARY=/full/path/to/jcma` (build one with `./build-native-image.sh`).
+
+Then **index once per repo:** `jcma index .` (`serve` needs an existing index).
 
 ## Status
 The core is built and green through **M3**: M0 returned **GO** on the JavaParser → native-image

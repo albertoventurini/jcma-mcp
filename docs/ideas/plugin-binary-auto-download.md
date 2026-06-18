@@ -1,23 +1,47 @@
-# Idea: auto-download the jcma binary from the plugin
+# Auto-download the jcma binary from the plugin
 
-**Status:** deferred follow-up to the Claude Code plugin packaging (captured 2026-06-14). The
-plugin (`.claude-plugin/` + portable `.mcp.json`) ships the MCP-server *wiring* only; the user
-supplies the binary on `PATH` or via `JCMA_BINARY` (LSP-server model). This note records the path
-to making install one step instead of two.
+**Status:** implemented (2026-06-18). `/plugin install jcma@jcma` now delivers a working binary
+with no manual download step. This note records how it works and why the earlier blockers fell.
 
-## Why it's deferred
+## How it works
 
-Today CI (`.github/workflows/build.yml`) only produces **expiring, auth-gated `upload-artifact`
-outputs** — not stable, public download URLs. There's nothing a plugin could `curl` without a
-GitHub token and an unexpired run.
+The plugin lives in [`plugin/`](../../plugin) (the marketplace `source`), so its install
+footprint is just that dir — not the whole repo. It ships no binary; it ships the wiring to fetch
+one, using two Claude Code plugin primitives:
 
-## Prerequisites to build it
+- **`SessionStart` hook** ([`plugin/hooks/hooks.json`](../../plugin/hooks/hooks.json)) runs
+  [`scripts/jcma-bootstrap.sh`](../../plugin/scripts/jcma-bootstrap.sh) when a session begins. It
+  detects OS/arch, picks the release asset (`jcma-linux-amd64.tar.gz`, `jcma-macos-arm64.tar.gz`,
+  else the `jcma-jvm.zip` fallback), downloads it, **verifies it against the published
+  `SHA256SUMS`**, and stages an executable at `$CLAUDE_PLUGIN_DATA/bin/jcma`. It's idempotent: a
+  no-op once the marker file matches the target tag, re-running only on first install or a version
+  change (the documented `node_modules` bootstrap pattern). Writes go through `*.new` + atomic
+  rename so an interrupted download never leaves a half-written binary.
+- **`.mcp.json`** ([`plugin/.mcp.json`](../../plugin/.mcp.json)) points the MCP server `command`
+  at [`scripts/jcma-launch.sh`](../../plugin/scripts/jcma-launch.sh), which exec's the cached
+  binary — self-healing by calling the bootstrap if the cache is missing, and honoring a
+  `$JCMA_BINARY` override for dev builds.
 
-1. Convert `build.yml` from `upload-artifact` to a **tagged GitHub Releases** pipeline: build
-   per-OS/arch native images, attach them as release assets, publish a `SHA256SUMS`.
-2. Then either:
-   - a small **launcher shim** in the plugin that resolves/downloads the right asset on first run
-     (verifying against `SHA256SUMS`) and caches it, or
-   - a standalone **`curl | sh` installer** the README points at, keeping the plugin binary-free.
+`$CLAUDE_PLUGIN_DATA` is a per-plugin dir that **survives plugin updates**, so the binary is
+downloaded once and reused; `$CLAUDE_PLUGIN_ROOT` (where the scripts live) is treated as
+ephemeral. The target release is derived from the plugin's own `version` + `repository` in
+`plugin.json` — a single source of truth — overridable via `JCMA_RELEASE_TAG` / `JCMA_RELEASE_REPO`.
 
-Until then: download separately and put `jcma` on `PATH` (or set `JCMA_BINARY`).
+## Why the earlier blockers fell
+
+The original deferral (2026-06-14) named two prerequisites; both are now met:
+
+1. **Stable public download URLs.** `release.yml` publishes per-OS/arch native tarballs + the JVM
+   zip as GitHub Release assets, plus a `SHA256SUMS` over all of them (added alongside this work).
+   No token or unexpired CI run needed — `albertoventurini/jcma` redirects to the renamed repo and
+   `curl -L` resolves the asset.
+2. **A delivery mechanism.** Claude Code's plugin platform supplies it directly (`SessionStart` +
+   `${CLAUDE_PLUGIN_DATA}` + `${CLAUDE_PLUGIN_ROOT}` in `.mcp.json`), so no bespoke launcher
+   protocol or `curl | sh` installer was needed.
+
+## Known limitations
+
+- **Per-version releases must exist.** The bootstrap fetches `v<plugin.json version>`; cut a
+  matching release when bumping the plugin version, or the download 404s.
+- **Windows is JVM-only and untested here.** The bash launcher covers Linux/macOS natively and the
+  JVM fallback on other Unix arches. Native Windows wiring (a `.cmd`/`.ps1` companion) is not built.

@@ -69,3 +69,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" jcma-jvm.zip --clobber
+
+  # Publish SHA256SUMS over all assets so the plugin bootstrap can verify downloads before
+  # exec'ing them. Runs after the asset producers so every file is on the release.
+  checksums:
+    needs: [native, jvm]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'jcma-*.tar.gz' --pattern 'jcma-jvm.zip'
+      - name: Compute checksums
+        run: sha256sum jcma-*.tar.gz jcma-jvm.zip > SHA256SUMS
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" SHA256SUMS --clobber
