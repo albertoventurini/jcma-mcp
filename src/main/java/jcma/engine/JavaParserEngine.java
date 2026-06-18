@@ -347,11 +347,70 @@ public final class JavaParserEngine implements AnalysisEngine {
             case CALL          -> ((MethodCallExpr) o.node()).resolve();
             case INSTANTIATION -> ((ObjectCreationExpr) o.node()).resolve();
             case METHOD_REF    -> ((MethodReferenceExpr) o.node()).resolve();
-            case TYPE_REF      -> ((ClassOrInterfaceType) o.node()).resolve();
+            case TYPE_REF      -> resolveTypeRef((ClassOrInterfaceType) o.node());
             case ANNOTATION    -> ((AnnotationExpr) o.node()).resolve();
             case NAME, FIELD_ACCESS ->
                     throw new IllegalStateException(o.kind() + " resolves as an ambiguous name");
         };
+    }
+
+    /**
+     * Resolve a type-reference node, with a fallback for a JavaParser 3.28.2 bug: its
+     * {@code JavaParserTypeAdapter.solveType} recurses into class/interface/enum/annotation containers
+     * but <em>not</em> {@code record}s, throwing {@link UnsupportedOperationException} for any type
+     * nested <em>through</em> a record (e.g. {@code Action.CreateCase.Indicator} where {@code CreateCase}
+     * is a record). The stock resolver is tried first (unchanged on the happy path); only on failure do
+     * we descend via the node's scope. On a genuine miss the original failure is rethrown so
+     * {@link #attempt} records it as a safe-degrading miss, exactly as before.
+     */
+    private Object resolveTypeRef(ClassOrInterfaceType type) {
+        try {
+            return type.resolve();
+        } catch (Throwable stockFailed) {
+            ResolvedTypeDeclaration viaScope = resolveViaScope(type);
+            if (viaScope != null) {
+                return viaScope;
+            }
+            // Not a record-nesting case (or the scope/nested type genuinely doesn't resolve): preserve
+            // the original failure for the classifier rather than masking it.
+            if (stockFailed instanceof RuntimeException re) {
+                throw re;
+            }
+            if (stockFailed instanceof Error err) {
+                throw err;
+            }
+            throw new RuntimeException(stockFailed);
+        }
+    }
+
+    /**
+     * The scope-nested fallback: resolve {@code type}'s scope (itself recursively — the scope may be a
+     * broken record hop too, so this generalises to any nesting depth) and look up the nested type by
+     * exact simple name among the scope's declared inner types ({@code internalTypes()} is record-safe,
+     * unlike the buggy {@code solveType}). Returns {@code null} when there is no scope, the scope does
+     * not resolve, or no such inner type exists — a precision-preserving miss, never a guessed name.
+     */
+    private ResolvedTypeDeclaration resolveViaScope(ClassOrInterfaceType type) {
+        Optional<ClassOrInterfaceType> scope = type.getScope();
+        if (scope.isEmpty()) {
+            return null;
+        }
+        ResolvedTypeDeclaration scopeDecl = resolveTypeDecl(scope.get());
+        if (scopeDecl == null) {
+            return null;
+        }
+        String simple = type.getNameAsString();
+        return scopeDecl.hasInternalType(simple) ? scopeDecl.getInternalType(simple) : null;
+    }
+
+    /** Resolve a type node to its declaration — stock first, then {@link #resolveViaScope}; {@code null} on miss. */
+    private ResolvedTypeDeclaration resolveTypeDecl(ClassOrInterfaceType type) {
+        try {
+            com.github.javaparser.resolution.types.ResolvedType rt = type.resolve();
+            return rt.isReferenceType() ? rt.asReferenceType().getTypeDeclaration().orElse(null) : null;
+        } catch (Throwable stockFailed) {
+            return resolveViaScope(type);
+        }
     }
 
     /**

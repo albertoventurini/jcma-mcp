@@ -6,6 +6,7 @@ import com.sun.source.tree.ClassTree;
 import com.sun.source.tree.CompilationUnitTree;
 import com.sun.source.tree.DeconstructionPatternTree;
 import com.sun.source.tree.InstanceOfTree;
+import com.sun.source.tree.LambdaExpressionTree;
 import com.sun.source.tree.MemberReferenceTree;
 import com.sun.source.tree.MemberSelectTree;
 import com.sun.source.tree.MethodTree;
@@ -18,6 +19,7 @@ import com.sun.source.tree.TypeParameterTree;
 import com.sun.source.tree.VariableTree;
 import com.sun.source.tree.WildcardTree;
 import com.sun.source.util.JavacTask;
+import com.sun.source.util.SourcePositions;
 import com.sun.source.util.TreePath;
 import com.sun.source.util.TreePathScanner;
 import com.sun.source.util.Trees;
@@ -52,14 +54,18 @@ import java.util.stream.Stream;
  * (top-level + nested) it emits, deduped, line-oriented TSV — the exact shape {@code jcma resolve-file}
  * produces, so the two are diffed directly:
  * <pre>
- *   SUPERTYPE &lt;ownerFqn&gt; &lt;depFqn&gt;   # a direct extends/implements target
- *   TYPEREF   &lt;ownerFqn&gt; &lt;depFqn&gt;   # a resolved type/annotation mention in the body
+ *   SUPERTYPE       &lt;ownerFqn&gt; &lt;depFqn&gt;   # a direct extends/implements target
+ *   TYPEREF         &lt;ownerFqn&gt; &lt;depFqn&gt;   # a type written in source (jcma's navigation contract)
+ *   TYPEREF_INFERRED &lt;ownerFqn&gt; &lt;depFqn&gt;  # a type only javac infers: `var` local / implicit lambda param
  * </pre>
  *
  * <p>A type mention is collected at the same syntactic positions jcma's occurrence scan covers —
- * field/var types, method return/param/throws, type parameters and bounds, generic type arguments,
- * {@code extends}/{@code implements}, {@code new}, casts, {@code instanceof}, annotations — reduced to
- * the erased type-element FQN (type arguments are themselves recursed into, not flattened). Primitives
+ * field/local/param types, method return/param/throws, type parameters and bounds, generic type
+ * arguments, {@code extends}/{@code implements}, {@code new}, casts, {@code instanceof}, annotations —
+ * reduced to the erased type-element FQN (type arguments are themselves recursed into, not flattened).
+ * A {@code var} local or implicit lambda parameter has no type written in source: javac infers it, but
+ * jcma's syntactic scan (like IntelliJ's Find Usages) cannot, so those go out as {@code TYPEREF_INFERRED}
+ * — the comparator reports them as an out-of-contract category, not against headline recall. Primitives
  * and {@code java.lang.Object} are dropped. Each mention attributes to its nearest enclosing
  * <em>named</em> type (an anonymous/local class body attributes to the enclosing named type — matching
  * jcma's enclosing-type attribution).
@@ -136,6 +142,7 @@ public final class Oracle {
     private final class Collector extends TreePathScanner<Void, Void> {
 
         private final Deque<String> owners = new ArrayDeque<>();
+        private CharSequence src;          // this unit's source text, lazily read for span checks
 
         private String owner() {
             return owners.peek();
@@ -181,8 +188,60 @@ public final class Oracle {
 
         @Override
         public Void visitVariable(VariableTree node, Void p) {
-            collectType(node.getType(), owner());
+            // A field/param/local with a written type is a syntactic mention jcma's scan sees (TYPEREF).
+            // A `var` local or an implicit lambda parameter has NO type written in source — javac infers
+            // it, but jcma's syntactic ClassOrInterfaceType scan (like IntelliJ's Find Usages) cannot
+            // see it. Tag those TYPEREF_INFERRED so the comparator can report them out-of-contract
+            // instead of charging them against the headline navigation recall.
+            String relation = isInferredType(node) ? "TYPEREF_INFERRED" : "TYPEREF";
+            collectType(node.getType(), owner(), relation);
             return super.visitVariable(node, p);
+        }
+
+        /**
+         * Was this variable's type <em>inferred</em> (not written in source)? True for a {@code var}
+         * local and for an implicit lambda parameter. The test is source-faithful: the type position
+         * carries no text, the text {@code var}, or — for a lambda param whose synthesized type javac
+         * pins to the name token — text equal to the parameter name.
+         */
+        private boolean isInferredType(VariableTree node) {
+            Tree typeTree = node.getType();
+            if (typeTree == null) {
+                return true;                   // implicit lambda parameter: no type node at all
+            }
+            CompilationUnitTree cu = getCurrentPath().getCompilationUnit();
+            SourcePositions sp = trees.getSourcePositions();
+            long start = sp.getStartPosition(cu, typeTree);
+            long end = sp.getEndPosition(cu, typeTree);
+            if (start < 0 || end < 0 || end <= start) {
+                return true;                   // no / zero-width span → synthesized type
+            }
+            CharSequence s = source();
+            if (s == null || end > s.length()) {
+                return false;
+            }
+            String text = s.subSequence((int) start, (int) end).toString().strip();
+            if (text.isEmpty() || text.equals("var")) {
+                return true;
+            }
+            // An implicit lambda parameter's synthesized type can be pinned to the parameter-name token
+            // (`row -> …` resolves to EvaluationRow but spans "row"). An explicitly-typed param has a
+            // distinct type token, so name-coincidence under a lambda parent means it was inferred.
+            TreePath parent = getCurrentPath().getParentPath();
+            boolean lambdaParam = parent != null && parent.getLeaf() instanceof LambdaExpressionTree;
+            return lambdaParam && text.equals(node.getName().toString());
+        }
+
+        /** The current compilation unit's source text (cached; one Collector per unit). */
+        private CharSequence source() {
+            if (src == null) {
+                try {
+                    src = getCurrentPath().getCompilationUnit().getSourceFile().getCharContent(true);
+                } catch (IOException e) {
+                    src = "";
+                }
+            }
+            return src;
         }
 
         @Override
@@ -275,43 +334,48 @@ public final class Oracle {
 
         /** Collect every named type referenced by {@code typeTree} (recursing into type arguments). */
         private void collectType(Tree typeTree, String owner) {
+            collectType(typeTree, owner, "TYPEREF");
+        }
+
+        /** As above, but emitting under {@code relation} (TYPEREF for written types, TYPEREF_INFERRED for var/lambda). */
+        private void collectType(Tree typeTree, String owner, String relation) {
             if (typeTree == null || owner == null || owner.isEmpty()) {
                 return;
             }
-            collectType(new TreePath(getCurrentPath(), typeTree), owner);
+            collectType(new TreePath(getCurrentPath(), typeTree), owner, relation);
         }
 
-        private void collectType(TreePath path, String owner) {
+        private void collectType(TreePath path, String owner, String relation) {
             Tree t = path.getLeaf();
             switch (t.getKind()) {
                 case PARAMETERIZED_TYPE -> {
                     ParameterizedTypeTree pt = (ParameterizedTypeTree) t;
-                    collectType(new TreePath(path, pt.getType()), owner);
+                    collectType(new TreePath(path, pt.getType()), owner, relation);
                     for (Tree arg : pt.getTypeArguments()) {
-                        collectType(new TreePath(path, arg), owner);
+                        collectType(new TreePath(path, arg), owner, relation);
                     }
                 }
-                case ARRAY_TYPE -> collectType(new TreePath(path, ((ArrayTypeTree) t).getType()), owner);
+                case ARRAY_TYPE -> collectType(new TreePath(path, ((ArrayTypeTree) t).getType()), owner, relation);
                 case ANNOTATED_TYPE ->
-                        collectType(new TreePath(path, ((AnnotatedTypeTree) t).getUnderlyingType()), owner);
+                        collectType(new TreePath(path, ((AnnotatedTypeTree) t).getUnderlyingType()), owner, relation);
                 case EXTENDS_WILDCARD, SUPER_WILDCARD -> {
                     Tree bound = ((WildcardTree) t).getBound();
                     if (bound != null) {
-                        collectType(new TreePath(path, bound), owner);
+                        collectType(new TreePath(path, bound), owner, relation);
                     }
                 }
                 case PRIMITIVE_TYPE, UNBOUNDED_WILDCARD -> { /* no named type */ }
                 default -> {
                     Element el = trees.getElement(path);
                     if (el instanceof TypeElement te) {
-                        emit("TYPEREF", owner, te.getQualifiedName().toString());
+                        emit(relation, owner, te.getQualifiedName().toString());
                     }
                     // A qualified type name `Outer.Inner` (a MEMBER_SELECT in a type position) names
                     // its qualifier too — recurse so `Outer` counts, matching jcma's per-node scan,
                     // which sees the nested ClassOrInterfaceType scope. A package qualifier resolves to
                     // a PackageElement (not a TypeElement) and is harmlessly dropped.
                     if (t instanceof MemberSelectTree ms) {
-                        collectType(new TreePath(path, ms.getExpression()), owner);
+                        collectType(new TreePath(path, ms.getExpression()), owner, relation);
                     }
                 }
             }

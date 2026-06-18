@@ -69,7 +69,10 @@ public final class Compare {
                 .append("against a **javac AST oracle** (full `parse()`+`analyze()` over the same ")
                 .append("sources and classpath). Apples-to-apples: both resolve type mentions at the ")
                 .append("source level; the comparison is over **erased type-element FQNs**, deduped, ")
-                .append("excluding primitives and `java.lang.Object`.\n\n");
+                .append("excluding primitives and `java.lang.Object`. Types the oracle sees only via ")
+                .append("inference (`var` locals, implicit lambda params — never written in source) are ")
+                .append("split out as an *out-of-contract* category, not charged against headline ")
+                .append("recall.\n\n");
 
         appendCoverage(md, oracleRows, jcmaRows, jcmaUnresolved, repoTypes);
 
@@ -77,6 +80,7 @@ public final class Compare {
             appendRelation(md, diffs, relation, oracleRows, jcmaRows, repoTypes);
         }
 
+        appendInferred(md, diffs, oracleRows, jcmaRows, repoTypes);
         appendPerf(md, perf);
         appendMethodNotes(md);
 
@@ -164,6 +168,64 @@ public final class Compare {
         appendWorstOffenders(md, missByOwner, extraByOwner);
     }
 
+    /**
+     * The out-of-contract category: dependencies the oracle sees only through an inferred position
+     * ({@code var} local / implicit lambda parameter) and never as a written type. jcma's syntactic
+     * scan cannot reach these by design, so they are reported separately and excluded from headline
+     * recall. "inferred-only" = TYPEREF_INFERRED minus TYPEREF (a dep also written somewhere is already
+     * covered by the syntactic headline, so it is not a gap).
+     */
+    private static void appendInferred(StringBuilder md, List<String> diffs, List<String[]> oracleRows,
+            List<String[]> jcmaRows, Set<String> repoTypes) {
+        Set<Edge> inferred = edges(oracleRows, "TYPEREF_INFERRED");
+        Set<Edge> syntactic = edges(oracleRows, "TYPEREF");
+        Set<Edge> inferredOnly = new TreeSet<>(Comparator.comparing(Edge::owner).thenComparing(Edge::dep));
+        for (Edge e : inferred) {
+            if (!syntactic.contains(e)) {
+                inferredOnly.add(e);
+            }
+        }
+        Set<Edge> jcmaTyperef = edges(jcmaRows, "TYPEREF");
+        Set<Edge> intraOnly = filter(inferredOnly, repoTypes, true);
+        Set<Edge> extOnly = filter(inferredOnly, repoTypes, false);
+
+        md.append("## Inferred-only type references (out of navigation contract)\n\n");
+        md.append("Dependencies the javac oracle sees **only** through an inferred position — a `var` ")
+                .append("local or an implicit lambda parameter, where the type name is never written in ")
+                .append("source. jcma's syntactic occurrence scan (like IntelliJ's *Find Usages* on a ")
+                .append("type) does not surface these by design, so they are reported here separately and ")
+                .append("are **not** part of the headline recall above.\n\n");
+        md.append("| partition | inferred-only (oracle) | jcma also reports | coverage |\n");
+        md.append("|---|---|---|---|\n");
+        appendInferredRow(md, "intra-repo", intraOnly, jcmaTyperef);
+        appendInferredRow(md, "external", extOnly, jcmaTyperef);
+        md.append("\n");
+
+        if (intraOnly.isEmpty()) {
+            md.append("No intra-repo inferred-only dependencies.\n\n");
+            return;
+        }
+        Map<String, List<String>> byOwner = new TreeMap<>();
+        for (Edge e : intraOnly) {
+            byOwner.computeIfAbsent(e.owner(), k -> new ArrayList<>()).add(e.dep());
+            diffs.add("TYPEREF_INFERRED\tINFERRED_ONLY\t" + e.owner() + "\t" + e.dep() + "\tintra");
+        }
+        md.append("Intra-repo inferred-only dependencies (owner → inferred dep):\n\n");
+        md.append("| owner | inferred-only deps |\n|---|---|\n");
+        for (Map.Entry<String, List<String>> en : byOwner.entrySet()) {
+            md.append("| `").append(shorten(en.getKey())).append("` | ")
+                    .append(fmtDeps(en.getValue())).append(" |\n");
+        }
+        md.append("\n");
+    }
+
+    private static void appendInferredRow(StringBuilder md, String label, Set<Edge> inferredOnly,
+            Set<Edge> jcma) {
+        long also = inferredOnly.stream().filter(jcma::contains).count();
+        double cov = inferredOnly.isEmpty() ? 0.0 : (double) also / inferredOnly.size();
+        md.append(String.format("| %s | %d | %d | %.1f%% |%n", label, inferredOnly.size(), also, cov * 100));
+    }
+
     private static void appendWorstOffenders(StringBuilder md, Map<String, List<String>> missByOwner,
             Map<String, List<String>> extraByOwner) {
         Set<String> owners = new TreeSet<>();
@@ -215,7 +277,12 @@ public final class Compare {
                 .append("Maven classpath; a `TreePathScanner` emits each declared type's direct ")
                 .append("supertypes and every resolved type mention (field/var/param/return/throws/")
                 .append("type-args/extends/implements/new/cast/instanceof/annotation), erased to the ")
-                .append("type-element FQN.\n");
+                .append("type-element FQN. A type written in source is `TYPEREF`; one only javac infers ")
+                .append("(`var` local, implicit lambda param) is `TYPEREF_INFERRED`.\n");
+        md.append("- **Navigation contract**: jcma's syntactic scan (like IntelliJ's *Find Usages*) ")
+                .append("surfaces written type names, not inferred ones. So headline TYPEREF recall is ")
+                .append("measured over written types; inferred-only deps are reported separately as an ")
+                .append("out-of-contract category — present in the oracle, by-design absent from jcma.\n");
         md.append("- **jcma**: `jcma resolve-file <file>` runs the same JavaParserSymbolSolver per-node ")
                 .append("resolve a real `find_references` uses, but over **every** type mention in the ")
                 .append("file (exhaustive selection, identical resolution), attributed to the enclosing ")

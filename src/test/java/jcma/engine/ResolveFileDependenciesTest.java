@@ -62,6 +62,40 @@ class ResolveFileDependenciesTest {
     }
 
     /**
+     * Regression for the record-container nested-type cliff, <em>at arbitrary depth</em>: a type path
+     * that descends through several records (interface → record → record → record → record) must
+     * resolve at every level. JavaParser 3.28.2's {@code JavaParserTypeAdapter.solveType} recurses into
+     * class/interface/enum/annotation containers but not records, throwing
+     * {@code UnsupportedOperationException} on every descend-through-record hop — so jcma safe-degrades.
+     *
+     * <p>This pins the <em>recursion</em> in the scope-nested fallback, not just a one-level patch: the
+     * outer hops ({@code Nest}, {@code Nest.Mid}) resolve via the stock path, but {@code .Deeper} and
+     * {@code .Deepest} require the broken scope itself to be recovered by the fallback. A non-recursive
+     * fallback resolves only {@code Nest.Mid.Deep} and fails these — so they are the load-bearing
+     * assertions.
+     */
+    @Test
+    void deepTypeNestedThroughRecordsResolvesAtEveryLevel() throws Exception {
+        JavaParserEngine engine = engine();
+        ParsedUnit unit = engine.parse(DIR.resolve("q/NestUser.java"));
+
+        List<TypeDependency> deps = engine.resolveFileDependencies(unit);
+        Set<String> got = resolvedTriples(deps);
+
+        // Outer hops resolve via the stock path (sanity — these pass without the fix).
+        assertTrue(got.contains("TYPEREF q.NestUser -> q.Nest"), got.toString());
+        assertTrue(got.contains("TYPEREF q.NestUser -> q.Nest.Mid"), got.toString());
+        // First broken hop — a one-level fallback would already satisfy this one.
+        assertTrue(got.contains("TYPEREF q.NestUser -> q.Nest.Mid.Deep"),
+                "a type nested one level through a record must resolve: " + got);
+        // Deeper hops — these require the RECURSION (the scope is itself a broken hop).
+        assertTrue(got.contains("TYPEREF q.NestUser -> q.Nest.Mid.Deep.Deeper"),
+                "two records deep must resolve (recursive fallback): " + got);
+        assertTrue(got.contains("TYPEREF q.NestUser -> q.Nest.Mid.Deep.Deeper.Deepest"),
+                "three records deep must resolve (recursive fallback): " + got);
+    }
+
+    /**
      * Regression for the whole-file resolution cliff (docs/whole-file-resolution-degradation.md): a
      * source file containing a {@code yield} statement must not lose <em>all</em> its resolved type
      * references. Under {@code LanguageLevel.RAW} the {@code yield} is a parse problem, which suppresses

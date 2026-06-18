@@ -14,12 +14,19 @@ run as **JDK single-file source-launches** (`java Oracle.java`) — stock JDK, n
 For every declared type (top-level + nested, main + test), two dependency relations:
 
 1. **Supertypes** — its direct `extends` / `implements` targets.
-2. **Outgoing type references** — every type mentioned in its body: field/var/param/return/throws
+2. **Outgoing type references** — every type mentioned in its body: field/local/param/return/throws
    types, generic type arguments, `extends`/`implements`/`permits`, `new`, casts, `instanceof`,
    annotations, class literals, switch patterns.
 
 Both sides resolve at the **source level** and the comparison is over **erased type-element FQNs**
 (generics dropped), deduped, excluding primitives, `java.lang.Object`, and self-edges.
+
+Type references split by what jcma's syntactic scan can *see*. A type **written** in source is jcma's
+**navigation contract** (`TYPEREF`) and counts toward headline recall. A type only **inferred** —
+a `var` local or an implicit lambda parameter, where the name is never written — is
+`TYPEREF_INFERRED`: javac resolves it, jcma's syntactic scan (like IntelliJ's *Find Usages* on a
+type) does not, so it is reported as a separate **out-of-contract** category, not charged against
+headline recall.
 
 - **Oracle** (`qa/oracle/Oracle.java`): full `javac` `JavacTask.parse() + analyze()` over all sources
   with the project's Maven classpath, then a `TreePathScanner` emits the truth set. This is the
@@ -62,7 +69,12 @@ only the hand-written `tiko-trust-rule-engine-spotcheck.md` (authored divergence
 
 A jcma miss lowers recall but is tolerable (PRD safe-degrade contract); a jcma extra lowers precision
 and is the harmful mode. The `*-diffs.tsv` lists each so divergences can be classified by hand (real
-jcma miss / real jcma extra / oracle artifact / classpath gap).
+jcma miss / real jcma extra / oracle artifact / classpath gap / inferred-only).
+
+- **Inferred-only** is a separate report section, not a recall miss: oracle deps reachable only through
+  a `var`/lambda inference (`TYPEREF_INFERRED` minus `TYPEREF`). jcma's coverage there is ~0% **by
+  design** — it is the navigation contract, not a bug. Detection is source-faithful: a type position is
+  inferred iff its source span is empty, the text `var`, or (for a lambda param) the param-name token.
 
 ## Scope / follow-ups
 
