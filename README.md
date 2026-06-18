@@ -51,7 +51,9 @@ updates. Platforms without a native build (Windows, other arches) transparently 
 `jcma-jvm.zip` fallback, which needs a JDK 25+ on `PATH`. To use your own build instead, set
 `JCMA_BINARY=/full/path/to/jcma` (build one with `./build-native-image.sh`).
 
-Then **index once per repo:** `jcma index .` (`serve` needs an existing index).
+That's it — the first query in a repo triggers a one-time index automatically (later queries, and
+later sessions, reuse the cache under `~/.cache/jcma` and only reconcile changed files). To avoid
+that first-query pause on a large repo, you can pre-warm it once with `jcma index .`.
 
 ## Status
 The core is built and green through **M3**: M0 returned **GO** on the JavaParser → native-image
