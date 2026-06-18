@@ -4,7 +4,10 @@
       "type": "stdio",
       "command": "${CLAUDE_PLUGIN_ROOT}/scripts/jcma-launch.sh",
       "args": ["serve"],
-      "env": {}
+      "env": {
+        "CLAUDE_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}",
+        "CLAUDE_PLUGIN_DATA": "${CLAUDE_PLUGIN_DATA}"
+      }
     }
   }
 }

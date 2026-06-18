@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
-# SessionStart hook: ensure the jcma binary is installed in the plugin's persistent
-# data dir ($CLAUDE_PLUGIN_DATA), downloading it from GitHub Releases on first run or
-# whenever the plugin version changes. Idempotent — a no-op once the right tag is in
-# place. Mirrors the documented node_modules SessionStart bootstrap pattern.
+# Ensure the jcma binary is installed in the plugin's persistent data dir, downloading it from
+# GitHub Releases on first run or when the pinned binary tag changes. Idempotent — a no-op once
+# the right tag is in place. Run as the SessionStart hook and as the launcher's self-heal.
+#
+# Usage: jcma-bootstrap.sh <plugin-root> <plugin-data>
+# Args win; CLAUDE_PLUGIN_ROOT/CLAUDE_PLUGIN_DATA are the fallback. We do NOT assume those env
+# vars are exported to the subprocess — the plugin config passes them in explicitly.
 set -euo pipefail
 
-# Claude Code exports these to hook + MCP subprocesses (see plugins-reference).
-root="${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT not set}"
-data="${CLAUDE_PLUGIN_DATA:?CLAUDE_PLUGIN_DATA not set}"
+root="${1:-${CLAUDE_PLUGIN_ROOT:-}}"
+data="${2:-${CLAUDE_PLUGIN_DATA:-}}"
+[ -n "$root" ] || { echo "jcma: plugin root not provided (arg 1 / CLAUDE_PLUGIN_ROOT)" >&2; exit 1; }
+[ -n "$data" ] || { echo "jcma: plugin data dir not provided (arg 2 / CLAUDE_PLUGIN_DATA)" >&2; exit 1; }
 
 manifest="$root/.claude-plugin/plugin.json"
-
-# Single source of truth for which release to fetch: the plugin's own version + repo.
 field() { sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -n1; }
-version="$(field version)"
 repo_url="$(field repository)"
 repo="${repo_url#https://github.com/}"; repo="${repo%.git}"
 
-# Both overridable for testing / forks / dev builds.
-tag="${JCMA_RELEASE_TAG:-v$version}"
+# The binary release to fetch is pinned here, independent of the plugin's own version — a
+# plugin-wiring fix can ship without re-releasing an identical binary. Bump this only when the
+# binary itself changes. Both knobs are overridable for testing / forks.
+tag="${JCMA_RELEASE_TAG:-v0.2.0}"
 repo="${JCMA_RELEASE_REPO:-$repo}"
 base="https://github.com/$repo/releases/download/$tag"
 
@@ -64,7 +67,7 @@ else
 fi
 
 # Stage an executable at $data/bin/jcma. Writes go to *.new then atomically rename so a
-# crashed download never leaves a half-written binary the launcher would exec.
+# crashed/concurrent download never leaves a half-written binary the launcher would exec.
 mkdir -p "$data/bin"
 if [ "$kind" = native ]; then
   tar -xzf "$tmp/$asset" -C "$tmp"

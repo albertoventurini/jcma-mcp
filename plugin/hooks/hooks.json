@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/jcma-bootstrap.sh\""
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/jcma-bootstrap.sh\" \"${CLAUDE_PLUGIN_ROOT}\" \"${CLAUDE_PLUGIN_DATA}\""
           }
         ]
       }

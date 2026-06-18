@@ -23,9 +23,18 @@ one, using two Claude Code plugin primitives:
   `$JCMA_BINARY` override for dev builds.
 
 `$CLAUDE_PLUGIN_DATA` is a per-plugin dir that **survives plugin updates**, so the binary is
-downloaded once and reused; `$CLAUDE_PLUGIN_ROOT` (where the scripts live) is treated as
-ephemeral. The target release is derived from the plugin's own `version` + `repository` in
-`plugin.json` — a single source of truth — overridable via `JCMA_RELEASE_TAG` / `JCMA_RELEASE_REPO`.
+downloaded once and reused; `$CLAUDE_PLUGIN_ROOT` (where the scripts live) is treated as ephemeral.
+Both paths are passed in **explicitly** — `.mcp.json` lists them in the server's `env` block and
+the hook passes them as args — because they are *not* reliably auto-exported to the subprocess
+(matching the documented `node_modules` example, which also references `${CLAUDE_PLUGIN_DATA}` in
+`env`). Relying on auto-export instead silently broke the launcher in every repo where it wasn't
+set.
+
+The binary release tag is **pinned in the bootstrap** (`tag="${JCMA_RELEASE_TAG:-v0.2.x}"`),
+deliberately decoupled from the plugin's own `version`: a plugin-wiring fix can ship as a new
+plugin version without re-releasing an identical binary. Bump the pin only when the binary itself
+changes. `repository` is read from `plugin.json`; both knobs are overridable via
+`JCMA_RELEASE_TAG` / `JCMA_RELEASE_REPO`.
 
 ## Why the earlier blockers fell
 
@@ -41,7 +50,7 @@ The original deferral (2026-06-14) named two prerequisites; both are now met:
 
 ## Known limitations
 
-- **Per-version releases must exist.** The bootstrap fetches `v<plugin.json version>`; cut a
-  matching release when bumping the plugin version, or the download 404s.
+- **The pinned binary tag must point at a real release.** The bootstrap fetches the tag pinned in
+  the script; when bumping it, cut the matching `v<tag>` release first, or the download 404s.
 - **Windows is JVM-only and untested here.** The bash launcher covers Linux/macOS natively and the
   JVM fallback on other Unix arches. Native Windows wiring (a `.cmd`/`.ps1` companion) is not built.
