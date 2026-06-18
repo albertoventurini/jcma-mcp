@@ -19,9 +19,10 @@ agent's context).
   jcma.mcp          McpServer · ToolRegistry · ToolHandler        initialize / tools/list / tools/call
         ▼
   jcma.tools        FindDefinition · FindReferences · FindSupertypes ·
-                    FindSubtypes · SearchSymbols · GrepJava         one ToolHandler per MCP tool
+                    FindSubtypes · SearchSymbols · GrepJava · SkimJava   one ToolHandler per MCP tool
         ▼
   jcma.response     BudgetPolicy · Shaping · ToolResult            token-bounded, snippet-bearing answers
+   (jcma.render     SkimRenderer                                   skim_java: spans → gutter'd elided Java)
         ▼
   jcma.query        QueryService                                   cancellable, time-boxed (--deadline)
         ▼
@@ -48,7 +49,8 @@ does not defer them behind a tool-search step (see the `mcp-tools-deferred-by-ha
 
 ### Tools — `jcma.tools`
 One `ToolHandler` per MCP tool. These are thin: parse arguments, call `QueryService`, hand the
-result to the response layer. The six tools:
+result to the response layer. (`skim_java` is the one exception — it needs no `QueryService`/index, it
+parses the one file fresh and renders it; see `jcma.render` below.) The seven tools:
 
 | Tool | Backed by | Answers |
 |---|---|---|
@@ -57,6 +59,7 @@ result to the response layer. The six tools:
 | `find_java_references` | Tier-2 edge resolve, `rev(X)` | every confirmed use of a symbol |
 | `find_java_supertypes` / `find_java_subtypes` | hierarchy layer (Tier 2) | walk EXTENDS/IMPLEMENTS/OVERRIDES |
 | `grep_java` | symbols first, then `text.seg` | search source; never worse than grep on coverage |
+| `skim_java` | fresh `StructuralParser.skim()` + `SkimRenderer` | a file's *shape*: real Java with method bodies elided (no index — pure parse + render) |
 
 ### Response layer — `jcma.response`
 Agent answers are **token-bounded** (PRD principle #4). `BudgetPolicy` is a swappable seam
@@ -65,6 +68,13 @@ sacred, snippets elastic**: an over-budget result first drops snippets (keeping 
 `file:line` + count, losslessly re-fetchable), and only then truncates the set — completeness of
 the reference *set* is never silently lost. `Shaping` groups references by enclosing symbol so a
 `find_references` answer carries its own context with no follow-up read.
+
+### Presentation — `jcma.render`
+A thin presentation seam, separate from `jcma.response` (which token-bounds *query* answers).
+`SkimRenderer` turns a `StructuralParser.SkimUnit` — verbatim doc/header/body source spans, AST-free —
+into the `skim_java` view: real Java with method bodies elided, behind a source-true line-number gutter.
+It owns the rendering policy (the `inlineBodyMaxChars` char gate that inlines short bodies vs collapses
+to `{ … }`, the doc on/off, the gutter), so the engine stays a span producer and renders no `String`.
 
 ### Query serving — `jcma.query` + `jcma.session`
 `QueryService` wraps the session with **cancellation and time-boxing**. Each query runs on a
@@ -83,8 +93,11 @@ session's lifetime and runs the **refresh → cascade → serve** loop described
 `AnalysisEngine` is the interface; `JavaParserEngine` is the implementation
 (**JavaParser + JavaSymbolSolver**). The interface exists so the engine
 is swappable — the PRD's documented fallback was a javac-hybrid, which M0 proved unnecessary.
-`StructuralParser` does the cheap **parse-only** pass that builds Tier 1 (symbols, containment,
-signatures, unresolved occurrences, text units); the resolving methods (`resolveType`,
+`StructuralParser` does the cheap **parse-only** pass that builds Tier 1, exposing four projections off
+one parse: `outline()` (symbols, containment, signatures → the indexer), `usages()` (unresolved
+occurrences), `textUnits()` (the `text.seg` corpus), and `skim()` (verbatim doc/header/body source spans
+for `skim_java`, rendered by `jcma.render`). All four are AST-free records, so the JavaParser
+`CompilationUnit` never crosses the seam (PRD §4). The resolving methods (`resolveType`,
 `resolveMethodCall`, occurrences) are the Tier-2 SymbolSolver path. The **resolving** parser parses at
 the project's discovered Java level (from the build; runtime-JDK fallback) with the language-level
 **validator post-processor stripped** — so `yield`/records/sealed/patterns parse (the symbol resolver
@@ -182,8 +195,9 @@ built binary with `-C <repo> serve`.
 ## CLI surface
 The same binary is also a dev/verification CLI (`jcma.cli`, dispatched in `Main`). `serve` (MCP)
 and `repl` (warm interactive session) are the long-running entry points; `index`, `compact`,
-`refs`, `def`, `supertypes`, `search`, `outline`, `stats`, `index-dump`, `resolve`, `selftest`
-are direct one-shot commands over the same engine/index. `--deadline <ms>` time-boxes any query;
+`refs`, `def`, `supertypes`, `search`, `outline`, `skim`, `stats`, `index-dump`, `resolve`, `selftest`
+are direct one-shot commands over the same engine/index (`skim` is the `skim_java` twin, for driving
+and calibrating the rendering without the MCP wire). `--deadline <ms>` time-boxes any query;
 `-C <dir>` overrides the inferred repo root.
 
 ## Where to go next

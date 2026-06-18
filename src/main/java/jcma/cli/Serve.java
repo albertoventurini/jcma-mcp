@@ -22,6 +22,7 @@ import jcma.tools.FindSubtypesTool;
 import jcma.tools.FindSupertypesTool;
 import jcma.tools.GrepJavaTool;
 import jcma.tools.SearchSymbolsTool;
+import jcma.tools.SkimJavaTool;
 import jcma.workspace.IndexLayout;
 import jcma.workspace.IndexLock;
 import jcma.workspace.IndexLockedException;
@@ -108,6 +109,8 @@ final class Serve {
         registry.register(new FindSubtypesTool(() -> session.svc, budget));
         registry.register(new SearchSymbolsTool(() -> session.svc, budget));
         registry.register(new GrepJavaTool(() -> session.svc, budget));
+        // skim_java needs no index/session — pure parse + render — so it resolves paths against the repo root.
+        registry.register(new SkimJavaTool(repo));
 
         // Pause-to-index: synchronous, lazy on the first tools/call, with a one-time stderr note.
         Runnable bootstrap = () -> {

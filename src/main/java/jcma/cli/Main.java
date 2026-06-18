@@ -79,6 +79,9 @@ public final class Main {
             case "outline" -> {
                 return Outline.run(a, out, err);
             }
+            case "skim" -> {
+                return Skim.run(a, out, err);
+            }
             case "refs" -> {
                 return Refs.run(cwd, a, out, err);
             }
@@ -192,6 +195,9 @@ public final class Main {
                                        reports files / symbols / LOC-per-second
                   compact <indexDir>   fold the overlay into a fresh base
                   outline <file>       print a file's declaration containment tree
+                  skim <file> [maxChars] [--no-docs]
+                                       print a file as real Java with method bodies elided (a
+                                       collapse-all view); short bodies inline, long ones { … }
                   refs <symbol> [--deadline <ms>]
                                        find references (Tier-2 resolve-on-demand), grouped by
                                        enclosing symbol, with counts + the unconfirmed tail

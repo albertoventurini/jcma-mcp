@@ -7,11 +7,13 @@
 > drills into any one declaration's full source; the FQNs that address it are derivable from the view
 > itself, so the skim weaves into the other symbol-addressed tools with no resolve roundtrip.
 >
-> **Status: proposal, not yet a numbered milestone task.** Decisions marked **[LOCKED]** were taken
-> with the user on 2026-06-18; **[OPEN]** items must come back to the user before they're decided.
-> On acceptance, fold the LOCKED parts into PRD §6 (tools). The extraction machinery already exists:
-> `jcma outline` / `StructuralParser.outline()` produce the declaration tree + ranges today; this
-> note is mostly *exposure + rendering*, not new analysis.
+> **Status: `skim_java` BUILT & green (M3, 2026-06-18).** All the [OPEN]s below were resolved with the
+> user on 2026-06-18 and the tool shipped; the LOCKED behavior is folded into PRD §6. The companion
+> `read_symbol` drill-down and the `tree` view remain **deferred** (see "Open questions", now resolved).
+> Implementation: a fourth `StructuralParser.Parsed.skim()` projection (verbatim source spans, AST-free),
+> a `jcma.render.SkimRenderer` (gutter + char gate + `{ … }` elision), and `jcma.tools.SkimJavaTool`
+> wired in `Serve`; plus a `jcma skim <file>` CLI twin for calibration. So it was mostly *exposure +
+> rendering* over the existing parse, not new analysis, as predicted.
 
 ## Why this exists
 
@@ -215,15 +217,22 @@ types, annotations, and the verbatim doc/body text), apply the char gate, and ke
 `jcma.query.QualifiedName`, already shared by the tools/CLI/REPL) to locate the declaration, then
 returns its source span — so it is also mostly *exposure*, not new analysis.
 
-## Open questions for the user
+## Open questions for the user — RESOLVED (2026-06-18)
 
-- **[OPEN]** Tool names — `skim_java` + `read_symbol`? (`skim_java` parallels `grep_java`; captures
-  the "read this file" reflex).
-- **[OPEN]** `inlineBodyMaxChars` default, and body-only vs whole-`signature + { body }`-line budget.
-- **[OPEN]** Does the `tree` view ship now (carrying the explicit FQNs), or wait for a programmatic
-  consumer?
-- **[OPEN]** Always fresh-parse (recommended), or allow serving from the index?
-- **[OPEN]** Does `QualifiedName` already disambiguate method overloads (by param types) and address
-  constructors, or does `read_symbol` need a richer selector? The skim shows the params either way.
-- **[OPEN]** Single file only, or accept a glob/dir to skim several files in one call (the cross-file
-  mapping case, where per-file skim beats per-file read most).
+- **[RESOLVED]** Tool name — **`skim_java`** (parallels the `_java` nav-tool family; captures the
+  "read this file" reflex). The companion drill-down would be `read_symbol`.
+- **[RESOLVED]** `inlineBodyMaxChars` — **body-only**, measured on the body's whitespace-normalized
+  inner text (a short body inlines regardless of signature length; bias-to-show on ties). Default
+  **100**, *calibrated* on jcma's own `src/main` (~770 block bodies): the boundary where the corpus
+  splits from delegators/getters/guards (≤~100) into multi-statement real logic — not a round number.
+- **[RESOLVED → DEFERRED]** The `tree` view waits for a programmatic consumer (it would carry the
+  explicit FQNs for `read_symbol`); `source` is the only view shipped.
+- **[RESOLVED]** **Always fresh-parse**, never served from the index — the index holds no render-grade
+  data (no modifiers/annotations/verbatim doc+body), so a parse is required regardless; this also moots
+  staleness.
+- **[RESOLVED → DEFERRED]** `read_symbol(FQN)` is deferred. When built it reuses
+  `QueryService.resolveTargets` / `QualifiedName` (the overload-agnostic selector that strips the
+  `(params)` descriptor) and returns **all** matching overloads, one section each (see
+  `qualified-name-selector`).
+- **[RESOLVED → DEFERRED]** **Single file only** for now. Multi-file (glob/dir) is a later loop over the
+  single-file renderer + budget shaping; the single-file path needs no rework to add it.

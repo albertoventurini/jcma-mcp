@@ -356,6 +356,7 @@ schemas finalized in Milestone 2; initial set:
 | `call_hierarchy` | symbol, `direction` (callers/callees) | grouped callers or callees with snippets |
 | `get_source` | symbol (FQN) | declaration source by symbol (vs. raw file+range) |
 | `grep_java` *(M3)* | `query`, `match?` (symbols/text/both), `fixed_string?`, `case_sensitive?`, `kind?`, `path?`, `output?` (content/files/count), `limit?` | the **grep replacement** for `.java`: semantic **symbol** matches ranked first, then labelled **text** matches (string-literal / comment / Javadoc), so it has no "wasn't-a-symbol" hole and is never worse than grep on coverage |
+| `skim_java` *(M3)* | `path`, `inlineBodyMaxChars?`, `includeDocs?` | the **`Read` replacement for an exploratory read**: one file as **real Java with method bodies elided** (IDE collapse-all) behind a source-true line-number gutter — short bodies inlined verbatim, long ones `{ … }`, docs verbatim |
 
 **`grep_java` — the no-hole front door (M3).** Added so the agent can *reach for jcma first* on any
 `.java` search rather than grep-then-maybe-jcma: it subsumes `search_symbols` (≡ `grep_java(match=symbols)`)
@@ -364,6 +365,23 @@ and degrades gracefully to a text tier, IntelliJ-shift+shift style. Routing is a
 config (no `PreToolUse` hook; a hook is host-specific and was rejected, 2026-06-11). Large results
 rank-before-truncate and auto-collapse `content`→per-file `count`. jcma is a strict superset of grep only
 for `.java`; non-Java files stay on built-in grep.
+
+**`skim_java` — the cheaper exploratory read (M3).** The agent's reflex when it wants a file's *shape*
+is to `Read` the whole thing — pulling hundreds of body lines to use a few. `skim_java` renders the file
+as **real Java with method bodies elided** (the zero-translation IDE collapse-all view the agent is
+already fluent in), so triage costs a skeleton, not the source. It is for orientation, not behavior:
+the logic lives in the bodies, and elision is **always visible** (`{ … }` + a gutter line-gap showing how
+much each hides), so the agent knows it is seeing shape, not source — the substitution trap is the
+failure mode to guard. Three dials, one fresh parse (no index — the index holds no render-grade data,
+so a parse is required regardless, which also moots staleness): `inlineBodyMaxChars` keeps trivially-short
+bodies inline (measured on the body's whitespace-normalized inner text, biased to *show* on ties since a
+shown body is verbatim truth; default **100**, calibrated on jcma's own `src/main` as the boundary where
+delegators/getters give way to multi-statement logic); `includeDocs` (default true) renders Javadoc
+verbatim or drops it cleanly — never truncated, since a clipped doc keeps the reassuring first sentence
+and drops the dangerous tail (`@return null …`). A demoted line-number gutter stays for size-at-a-glance
+and coordinate coherence with the line-reporting tools (`grep_java`, `find_references`). *Deferred:* a
+`read_symbol(FQN)` symbol-addressed drill-down (reuses `resolveTargets`/`QualifiedName`), a machine-readable
+`tree` view, and multi-file globbing — none reworks the single-file path.
 
 **MCP transport:** stdio (Claude Code launches the binary as a subprocess). Implementation:
 prefer a **minimal hand-rolled MCP/JSON-RPC stdio layer** to keep native-image clean and avoid
