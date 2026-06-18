@@ -30,11 +30,11 @@ the hook passes them as args — because they are *not* reliably auto-exported t
 `env`). Relying on auto-export instead silently broke the launcher in every repo where it wasn't
 set.
 
-The binary release tag is **pinned in the bootstrap** (`tag="${JCMA_RELEASE_TAG:-v0.2.x}"`),
-deliberately decoupled from the plugin's own `version`: a plugin-wiring fix can ship as a new
-plugin version without re-releasing an identical binary. Bump the pin only when the binary itself
-changes. `repository` is read from `plugin.json`; both knobs are overridable via
-`JCMA_RELEASE_TAG` / `JCMA_RELEASE_REPO`.
+The binary release **tracks the plugin version**: the bootstrap fetches `v<plugin.json version>`
+from the repo named in `plugin.json`'s `repository` (both overridable via `JCMA_RELEASE_TAG` /
+`JCMA_RELEASE_REPO`). One version line for everything — so every `version` bump needs a matching
+`v<version>` release. To iterate on the wiring without cutting releases, run with `--plugin-dir`
+and a local `$JCMA_BINARY`; only bump + release when you actually ship.
 
 ## Why the earlier blockers fell
 
@@ -50,7 +50,7 @@ The original deferral (2026-06-14) named two prerequisites; both are now met:
 
 ## Known limitations
 
-- **The pinned binary tag must point at a real release.** The bootstrap fetches the tag pinned in
-  the script; when bumping it, cut the matching `v<tag>` release first, or the download 404s.
+- **Every plugin version needs a matching release.** The bootstrap fetches `v<plugin.json version>`;
+  cut the matching release when bumping the plugin version, or the download 404s.
 - **Windows is JVM-only and untested here.** The bash launcher covers Linux/macOS natively and the
   JVM fallback on other Unix arches. Native Windows wiring (a `.cmd`/`.ps1` companion) is not built.

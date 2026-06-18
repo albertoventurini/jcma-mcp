@@ -15,13 +15,14 @@ data="${2:-${CLAUDE_PLUGIN_DATA:-}}"
 
 manifest="$root/.claude-plugin/plugin.json"
 field() { sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -n1; }
+version="$(field version)"
 repo_url="$(field repository)"
 repo="${repo_url#https://github.com/}"; repo="${repo%.git}"
 
-# The binary release to fetch is pinned here, independent of the plugin's own version — a
-# plugin-wiring fix can ship without re-releasing an identical binary. Bump this only when the
-# binary itself changes. Both knobs are overridable for testing / forks.
-tag="${JCMA_RELEASE_TAG:-v0.2.0}"
+# The binary release tracks the plugin version: plugin 0.2.1 fetches the v0.2.1 binaries. Cut a
+# matching `v<version>` release whenever you bump the plugin version, or the download 404s. Both
+# knobs are overridable for testing / forks.
+tag="${JCMA_RELEASE_TAG:-v$version}"
 repo="${JCMA_RELEASE_REPO:-$repo}"
 base="https://github.com/$repo/releases/download/$tag"
 
